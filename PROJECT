@@ -1,7 +1,7 @@
 domain: operator.port389.org
 repo: github.com/vashirov/ds-operator
 resources:
-- group: idm
+- group: dirsrv
   kind: DirectoryServer
   version: v1alpha1
 version: "2"

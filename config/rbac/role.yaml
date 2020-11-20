@@ -7,7 +7,26 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - idm.operator.port389.org
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - dirsrv.operator.port389.org
   resources:
   - directoryservers
   verbs:
@@ -19,7 +38,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - idm.operator.port389.org
+  - dirsrv.operator.port389.org
+  resources:
+  - directoryservers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dirsrv.operator.port389.org
   resources:
   - directoryservers/status
   verbs:
