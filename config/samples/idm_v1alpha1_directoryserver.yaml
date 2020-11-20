@@ -1,4 +1,4 @@
-apiVersion: idm.operator.port389.org/v1
+apiVersion: idm.operator.port389.org/v1alpha1
 kind: DirectoryServer
 metadata:
   name: directoryserver-sample

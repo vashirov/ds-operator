@@ -24,7 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	idmv1 "github.com/vashirov/ds-operator/api/v1"
+	idmv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
 )
 
 // DirectoryServerReconciler reconciles a DirectoryServer object
@@ -48,6 +48,6 @@ func (r *DirectoryServerReconciler) Reconcile(req ctrl.Request) (ctrl.Result, er
 
 func (r *DirectoryServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&idmv1.DirectoryServer{}).
+		For(&idmv1alpha1.DirectoryServer{}).
 		Complete(r)
 }

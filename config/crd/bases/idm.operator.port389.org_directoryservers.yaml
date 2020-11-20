@@ -35,6 +35,7 @@ spec:
           type: object
         spec:
           description: DirectoryServerSpec defines the desired state of DirectoryServer
+            DirectoryServerSpec defines the desired state of DirectoryServer
           properties:
             size:
               description: Size is the size of the directoryserver deployment
@@ -56,9 +57,9 @@ spec:
           - nodes
           type: object
       type: object
-  version: v1
+  version: v1alpha1
   versions:
-  - name: v1
+  - name: v1alpha1
     served: true
     storage: true
 status:
