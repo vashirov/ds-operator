@@ -5,7 +5,7 @@ metadata:
   name: directoryserver-editor-role
 rules:
 - apiGroups:
-  - idm.operator.port389.org
+  - dirsrv.operator.port389.org
   resources:
   - directoryservers
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - idm.operator.port389.org
+  - dirsrv.operator.port389.org
   resources:
   - directoryservers/status
   verbs:

@@ -33,7 +33,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	idmv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
+	dirsrvv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
 )
 
 // DirectoryServerReconciler reconciles a DirectoryServer object
@@ -43,9 +43,9 @@ type DirectoryServerReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=idm.operator.port389.org,resources=directoryservers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=idm.operator.port389.org,resources=directoryservers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=idm.operator.port389.org,resources=directoryservers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
 
@@ -54,7 +54,7 @@ func (r *DirectoryServerReconciler) Reconcile(req ctrl.Request) (ctrl.Result, er
 	log := r.Log.WithValues("directoryserver", req.NamespacedName)
 
 	// Fetch the Directory Server instance
-	dirsrv := &idmv1alpha1.DirectoryServer{}
+	dirsrv := &dirsrvv1alpha1.DirectoryServer{}
 	err := r.Get(ctx, req.NamespacedName, dirsrv)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -129,7 +129,7 @@ func (r *DirectoryServerReconciler) Reconcile(req ctrl.Request) (ctrl.Result, er
 
 // deploymentForDirectoryServer returns a directoryserver Deployment object
 // TODO: add service account and volume mounts
-func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *idmv1alpha1.DirectoryServer) *appsv1.Deployment {
+func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alpha1.DirectoryServer) *appsv1.Deployment {
 	ls := labelsForDirectoryServer(m.Name)
 	replicas := m.Spec.Size
 
@@ -182,7 +182,7 @@ func getPodNames(pods []corev1.Pod) []string {
 
 func (r *DirectoryServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&idmv1alpha1.DirectoryServer{}).
+		For(&dirsrvv1alpha1.DirectoryServer{}).
 		Owns(&appsv1.Deployment{}).
 		Complete(r)
 }
