@@ -36,13 +36,24 @@ spec:
         spec:
           description: DirectoryServerSpec defines the desired state of DirectoryServer
           properties:
-            foo:
-              description: Foo is an example field of DirectoryServer. Edit DirectoryServer_types.go
-                to remove/update
-              type: string
+            size:
+              description: Size is the size of the directoryserver deployment
+              format: int32
+              minimum: 0
+              type: integer
+          required:
+          - size
           type: object
         status:
           description: DirectoryServerStatus defines the observed state of DirectoryServer
+          properties:
+            nodes:
+              description: Nodes are the names of the directory server pods
+              items:
+                type: string
+              type: array
+          required:
+          - nodes
           type: object
       type: object
   version: v1

@@ -25,17 +25,15 @@ import (
 
 // DirectoryServerSpec defines the desired state of DirectoryServer
 type DirectoryServerSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of DirectoryServer. Edit DirectoryServer_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// Size is the size of the directoryserver deployment
+	Size int32 `json:"size"`
 }
 
 // DirectoryServerStatus defines the observed state of DirectoryServer
 type DirectoryServerStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Nodes are the names of the directory server pods
+	Nodes []string `json:"nodes"`
 }
 
 // +kubebuilder:object:root=true
