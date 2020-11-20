@@ -1,0 +1,3 @@
+domain: operator.port389.org
+repo: github.com/vashirov/ds-operator
+version: "2"
