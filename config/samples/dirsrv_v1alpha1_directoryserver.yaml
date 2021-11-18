@@ -1,0 +1,6 @@
+apiVersion: dirsrv.operator.port389.org/v1alpha1
+kind: DirectoryServer
+metadata:
+  name: directoryserver-sample
+spec:
+  # Add fields here

@@ -1,7 +1,19 @@
 domain: operator.port389.org
+layout:
+- go.kubebuilder.io/v3
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+projectName: ds-operator
 repo: github.com/vashirov/ds-operator
 resources:
-- group: dirsrv
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: operator.port389.org
+  group: dirsrv
   kind: DirectoryServer
+  path: github.com/vashirov/ds-operator/api/v1alpha1
   version: v1alpha1
-version: "2"
+version: "3"
