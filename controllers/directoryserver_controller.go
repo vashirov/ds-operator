@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"os"
 	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -129,6 +130,10 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alpha1.DirectoryServer) *appsv1.Deployment {
 	ls := labelsForDirectoryServer(m.Name)
 	replicas := m.Spec.Size
+	dsImg := os.Getenv("RELATED_IMAGE_DIRSRV")
+	if dsImg == "" {
+		dsImg = "quay.io/vashirov/ds-container:latest"
+	}
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -146,7 +151,7 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image: "quay.io/vashirov/ds-container:latest",
+						Image: dsImg,
 						Name:  "ds-container",
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: 30389,
