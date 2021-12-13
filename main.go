@@ -80,9 +80,10 @@ func main() {
 
 	if err = (&controllers.DirectoryServerReconciler{
 		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("directoryserver"),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DirectoryServer")
+		setupLog.Error(err, "unable to create controller", "controller", "directoryserver")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
