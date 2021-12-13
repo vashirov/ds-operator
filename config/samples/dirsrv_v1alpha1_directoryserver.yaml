@@ -3,4 +3,5 @@ kind: DirectoryServer
 metadata:
   name: directoryserver-sample
 spec:
-  # Add fields here
+  size: 1
+  stateful: true

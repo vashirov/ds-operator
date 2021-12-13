@@ -26,16 +26,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/go-logr/logr"
 	dirsrvv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
 )
 
-const defaultDirsrvImage = "quay.io/vashirov/ds-container:latest"
+const defaultDirsrvImage = "quay.io/389ds/dirsrv:latest"
 const ldapPort = 30389
 
 // const ldapsPort = 30636
@@ -51,6 +53,7 @@ type DirectoryServerReconciler struct {
 // +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;
 
 func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -72,40 +75,75 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// Check if the deployment already exists, if not create a new one
-	found := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: dirsrv.Name, Namespace: dirsrv.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		// Define a new deployment
-		dep := r.deploymentForDirectoryServer(dirsrv)
-		log.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-		err = r.Create(ctx, dep)
-		if err != nil {
-			log.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
-			return ctrl.Result{}, err
-		}
-		// Deployment created successfully - return and requeue
-		return ctrl.Result{Requeue: true}, nil
-	} else if err != nil {
-		log.Error(err, "Failed to get Deployment")
-		return ctrl.Result{}, err
-	}
-
-	// Ensure the deployment size is the same as the spec
+	stateful := dirsrv.Spec.Stateful
 	size := dirsrv.Spec.Size
-	if *found.Spec.Replicas != size {
-		found.Spec.Replicas = &size
-		err = r.Update(ctx, found)
-		if err != nil {
-			log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+
+	if stateful {
+		// Check if the StatefulSet already exists, if not create a new one
+		found := &appsv1.StatefulSet{}
+		err = r.Get(ctx, types.NamespacedName{Name: dirsrv.Name, Namespace: dirsrv.Namespace}, found)
+		if err != nil && errors.IsNotFound(err) {
+			// Define a new StatefulSet
+			dep := r.statefulSetForDirectoryServer(dirsrv)
+			log.Info("Creating a new StatefulSet", "StatefulSet.Namespace", dep.Namespace, "StatefulSet.Name", dep.Name)
+			err = r.Create(ctx, dep)
+			if err != nil {
+				log.Error(err, "Failed to create new StatefulSet", "StatefulSet.Namespace", dep.Namespace, "StatefulSet.Name", dep.Name)
+				return ctrl.Result{}, err
+			}
+			// StatefulSet created successfully - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		} else if err != nil {
+			log.Error(err, "Failed to get StatefulSet")
 			return ctrl.Result{}, err
 		}
-		// Spec updated - return and requeue
-		return ctrl.Result{Requeue: true}, nil
+
+		// Ensure the StatefulSet size is the same as the spec
+		if *found.Spec.Replicas != size {
+			found.Spec.Replicas = &size
+			err = r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update StatefulSet", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
+				return ctrl.Result{}, err
+			}
+			// Spec updated - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		}
+	} else {
+		// Check if the Deployment already exists, if not create a new one
+		found := &appsv1.Deployment{}
+		err = r.Get(ctx, types.NamespacedName{Name: dirsrv.Name, Namespace: dirsrv.Namespace}, found)
+		if err != nil && errors.IsNotFound(err) {
+			// Define a new Deployment
+			dep := r.deploymentForDirectoryServer(dirsrv)
+			log.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			err = r.Create(ctx, dep)
+			if err != nil {
+				log.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+				return ctrl.Result{}, err
+			}
+			// Deployment created successfully - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		} else if err != nil {
+			log.Error(err, "Failed to get Deployment")
+			return ctrl.Result{}, err
+		}
+
+		// Ensure the Deployment size is the same as the spec
+		if *found.Spec.Replicas != size {
+			found.Spec.Replicas = &size
+			err = r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+				return ctrl.Result{}, err
+			}
+			// Spec updated - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Update the DirectoryServer status with the pod names
-	// List the pods for this dirsrv's deployment
+	// List the pods for this dirsrv's StatefulSets or Deployments
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(dirsrv.Namespace),
@@ -132,9 +170,9 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 // deploymentForDirectoryServer returns a directoryserver Deployment object
 // TODO: add service account and volume mounts
-func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alpha1.DirectoryServer) *appsv1.Deployment {
-	ls := labelsForDirectoryServer(m.Name)
-	replicas := m.Spec.Size
+func (r *DirectoryServerReconciler) deploymentForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) *appsv1.Deployment {
+	ls := labelsForDirectoryServer(dirsrv.Name)
+	replicas := dirsrv.Spec.Size
 	dsImg := os.Getenv("RELATED_IMAGE_DIRSRV")
 	if dsImg == "" {
 		dsImg = defaultDirsrvImage
@@ -142,8 +180,8 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Name,
-			Namespace: m.Namespace,
+			Name:      dirsrv.Name,
+			Namespace: dirsrv.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -160,7 +198,7 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 						Name:  "ds-container",
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: ldapPort,
-							Name:          "dirsrv",
+							Name:          "ldap",
 						}},
 					}},
 				},
@@ -168,8 +206,77 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 		},
 	}
 	// Set DirectoryServer instance as the owner and controller
-	ctrl.SetControllerReference(m, dep, r.Scheme)
+	ctrl.SetControllerReference(dirsrv, dep, r.Scheme)
 	return dep
+}
+
+// statefulSetForDirectoryServer returns a dirsrv StatefulSet object
+func (r *DirectoryServerReconciler) statefulSetForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) *appsv1.StatefulSet {
+	ls := labelsForDirectoryServer(dirsrv.Name)
+	replicas := dirsrv.Spec.Size
+	storageName := "standard"
+	volumeName := dirsrv.Name + "-volume"
+	dsImg := os.Getenv("RELATED_IMAGE_DIRSRV")
+	if dsImg == "" {
+		dsImg = defaultDirsrvImage
+	}
+
+	statefulSet := &appsv1.StatefulSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dirsrv.Name,
+			Namespace: dirsrv.Namespace,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: ls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: ls,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  dirsrv.Name,
+						Image: dsImg,
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: ldapPort,
+							Name:          "ldap",
+						}},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      volumeName,
+							MountPath: "/data",
+						}},
+					}},
+				},
+			},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   volumeName,
+					Labels: ls,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					StorageClassName: &storageName,
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("4Gi"),
+						},
+					},
+				},
+			}},
+		},
+	}
+
+	// Set DirectoryServer instance as the owner and controller
+	controllerutil.SetControllerReference(dirsrv, statefulSet, r.Scheme)
+	return statefulSet
 }
 
 // labelsForDirectoryServer returns the labels for selecting the resources
@@ -191,5 +298,6 @@ func (r *DirectoryServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dirsrvv1alpha1.DirectoryServer{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Complete(r)
 }

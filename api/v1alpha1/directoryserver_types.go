@@ -28,7 +28,8 @@ import (
 type DirectoryServerSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// Size is the size of the directoryserver deployment
-	Size int32 `json:"size"`
+	Size     int32 `json:"size"`
+	Stateful bool  `json:"stateful"`
 }
 
 // DirectoryServerStatus defines the observed state of DirectoryServer

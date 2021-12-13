@@ -42,8 +42,11 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              stateful:
+                type: boolean
             required:
             - size
+            - stateful
             type: object
           status:
             description: DirectoryServerStatus defines the observed state of DirectoryServer
