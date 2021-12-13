@@ -35,6 +35,11 @@ import (
 	dirsrvv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
 )
 
+const defaultDirsrvImage = "quay.io/vashirov/ds-container:latest"
+const ldapPort = 30389
+
+// const ldapsPort = 30636
+
 // DirectoryServerReconciler reconciles a DirectoryServer object
 type DirectoryServerReconciler struct {
 	client.Client
@@ -132,7 +137,7 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 	replicas := m.Spec.Size
 	dsImg := os.Getenv("RELATED_IMAGE_DIRSRV")
 	if dsImg == "" {
-		dsImg = "quay.io/vashirov/ds-container:latest"
+		dsImg = defaultDirsrvImage
 	}
 
 	dep := &appsv1.Deployment{
@@ -154,7 +159,7 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(m *dirsrvv1alph
 						Image: dsImg,
 						Name:  "ds-container",
 						Ports: []corev1.ContainerPort{{
-							ContainerPort: 30389,
+							ContainerPort: ldapPort,
 							Name:          "dirsrv",
 						}},
 					}},
