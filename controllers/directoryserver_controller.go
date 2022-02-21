@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/go-logr/logr"
 	dirsrvv1alpha1 "github.com/vashirov/ds-operator/api/v1alpha1"
@@ -84,7 +83,11 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		err = r.Get(ctx, types.NamespacedName{Name: dirsrv.Name, Namespace: dirsrv.Namespace}, found)
 		if err != nil && errors.IsNotFound(err) {
 			// Define a new StatefulSet
-			dep := r.statefulSetForDirectoryServer(dirsrv)
+			dep, err := r.statefulSetForDirectoryServer(dirsrv)
+			if err != nil {
+				log.Error(err, "Failed to define a new StatefulSet", "StatefulSet.Namespace", dep.Namespace, "StatefulSet.Name", dep.Name)
+				return ctrl.Result{}, err
+			}
 			log.Info("Creating a new StatefulSet", "StatefulSet.Namespace", dep.Namespace, "StatefulSet.Name", dep.Name)
 			err = r.Create(ctx, dep)
 			if err != nil {
@@ -95,6 +98,7 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{Requeue: true}, nil
 		} else if err != nil {
 			log.Error(err, "Failed to get StatefulSet")
+
 			return ctrl.Result{}, err
 		}
 
@@ -115,7 +119,11 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		err = r.Get(ctx, types.NamespacedName{Name: dirsrv.Name, Namespace: dirsrv.Namespace}, found)
 		if err != nil && errors.IsNotFound(err) {
 			// Define a new Deployment
-			dep := r.deploymentForDirectoryServer(dirsrv)
+			dep, err := r.deploymentForDirectoryServer(dirsrv)
+			if err != nil {
+				log.Error(err, "Failed to define a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+				return ctrl.Result{}, err
+			}
 			log.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			err = r.Create(ctx, dep)
 			if err != nil {
@@ -170,7 +178,8 @@ func (r *DirectoryServerReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 // deploymentForDirectoryServer returns a directoryserver Deployment object
 // TODO: add service account and volume mounts
-func (r *DirectoryServerReconciler) deploymentForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) *appsv1.Deployment {
+func (r *DirectoryServerReconciler) deploymentForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) (*appsv1.Deployment, error) {
+	log := r.Log.WithValues("directoryserver")
 	ls := labelsForDirectoryServer(dirsrv.Name)
 	replicas := dirsrv.Spec.Size
 	dsImg := os.Getenv("RELATED_IMAGE_DIRSRV")
@@ -206,12 +215,16 @@ func (r *DirectoryServerReconciler) deploymentForDirectoryServer(dirsrv *dirsrvv
 		},
 	}
 	// Set DirectoryServer instance as the owner and controller
-	ctrl.SetControllerReference(dirsrv, dep, r.Scheme)
-	return dep
+	if err := ctrl.SetControllerReference(dirsrv, dep, r.Scheme); err != nil {
+		log.Error(err, "Failed to set DirectoryServer instance as the owner and controller")
+		return nil, err
+	}
+	return dep, nil
 }
 
 // statefulSetForDirectoryServer returns a dirsrv StatefulSet object
-func (r *DirectoryServerReconciler) statefulSetForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) *appsv1.StatefulSet {
+func (r *DirectoryServerReconciler) statefulSetForDirectoryServer(dirsrv *dirsrvv1alpha1.DirectoryServer) (*appsv1.StatefulSet, error) {
+	log := r.Log.WithValues("directoryserver")
 	ls := labelsForDirectoryServer(dirsrv.Name)
 	replicas := dirsrv.Spec.Size
 	storageName := "standard"
@@ -275,8 +288,11 @@ func (r *DirectoryServerReconciler) statefulSetForDirectoryServer(dirsrv *dirsrv
 	}
 
 	// Set DirectoryServer instance as the owner and controller
-	controllerutil.SetControllerReference(dirsrv, statefulSet, r.Scheme)
-	return statefulSet
+	if err := ctrl.SetControllerReference(dirsrv, statefulSet, r.Scheme); err != nil {
+		log.Error(err, "Failed to set DirectoryServer instance as the owner and controller")
+		return nil, err
+	}
+	return statefulSet, nil
 }
 
 // labelsForDirectoryServer returns the labels for selecting the resources
