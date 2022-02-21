@@ -1,0 +1,44 @@
+---
+name: Build and publish
+on:
+  push:
+    tags:
+      - v*
+    branches:
+      - main
+      - master
+
+env:
+  OPERATOR_SDK_VERSION: v1.17.0
+
+jobs:
+  build:
+    if: ${{ github.repository == 'vashirov/ds-operator' }}
+    runs-on: ubuntu-latest
+    environment: CI
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.16
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install operator-sdk
+        run: sudo curl -L -o /usr/local/bin/operator-sdk "https://github.com/operator-framework/operator-sdk/releases/download/${OPERATOR_SDK_VERSION}/operator-sdk_linux_amd64" && sudo chmod +x /usr/local/bin/operator-sdk
+
+      - name: Save latest tag
+        run: echo "TAG=latest" >> $GITHUB_ENV
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Save version tag
+        run: echo "TAG=${GITHUB_REF#refs\/tags\/}" >> $GITHUB_ENV
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Publish Container Image
+        if: ${{ github.event_name == 'push' && env.TAG}}
+        run: |
+          docker login -u ${{ secrets.QUAY_USERNAME }} -p ${{ secrets.QUAY_PASSWORD }} quay.io
+          make build container-build container-push REGISTRY="quay.io" TAG=${{ env.TAG }}
+          make bundle bundle-build bundle-push catalog-build catalog-push REGISTRY="quay.io" TAG=${{ env.TAG }}
