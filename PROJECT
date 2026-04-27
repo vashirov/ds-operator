@@ -2,7 +2,7 @@
 # This file is used to track the info used to scaffold your project
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
-domain: operator.port389.org
+domain: dirsrv.operator.port389.org
 layout:
 - go.kubebuilder.io/v4
 plugins:
@@ -10,4 +10,13 @@ plugins:
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: ds-operator
 repo: github.com/389ds/ds-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: dirsrv.operator.port389.org
+  kind: DirectoryService
+  path: github.com/389ds/ds-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

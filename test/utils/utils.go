@@ -165,12 +165,36 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a local container image to the kind cluster.
+// When KIND_EXPERIMENTAL_PROVIDER=podman, it saves the image to an archive first
+// and uses "kind load image-archive" since "kind load docker-image" may not find
+// Podman-built images.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+
+	if os.Getenv("KIND_EXPERIMENTAL_PROVIDER") == "podman" {
+		// Save image to a temp archive file
+		tmpFile, err := os.CreateTemp("", "kind-image-*.tar")
+		if err != nil {
+			return fmt.Errorf("failed to create temp file for image archive: %w", err)
+		}
+		archivePath := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(archivePath)
+
+		saveCmd := exec.Command("podman", "save", name, "-o", archivePath)
+		if _, err := Run(saveCmd); err != nil {
+			return fmt.Errorf("failed to save image to archive: %w", err)
+		}
+
+		loadCmd := exec.Command("kind", "load", "image-archive", archivePath, "--name", cluster)
+		_, err = Run(loadCmd)
+		return err
+	}
+
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)
