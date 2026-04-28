@@ -49,6 +49,15 @@ type DirectoryServiceSpec struct {
 	// +optional
 	DMPasswordSecretRef *corev1.LocalObjectReference `json:"dmPasswordSecretRef,omitempty"`
 
+	// DMPasswordMode controls how the Directory Manager password is injected into the container.
+	//   - "env": injects via DS_DM_PASSWORD environment variable (supported by all 389DS container versions).
+	//   - "file": mounts the Secret as a file and sets DS_DM_PASSWORD_FILE.
+	//     Requires 389DS container image with DS_DM_PASSWORD_FILE support.
+	// +kubebuilder:default=env
+	// +kubebuilder:validation:Enum=env;file
+	// +optional
+	DMPasswordMode string `json:"dmPasswordMode,omitempty"`
+
 	// Ports configures LDAP and LDAPS listener ports.
 	// +optional
 	Ports *PortSpec `json:"ports,omitempty"`

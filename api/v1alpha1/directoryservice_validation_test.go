@@ -241,4 +241,38 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
 		})
 	})
+
+	Context("dmPasswordMode validation", func() {
+		It("should default to env mode", func() {
+			ds := validDS("valid-dm-default")
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+
+			fetched := &operatorv1alpha1.DirectoryService{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(ds), fetched)).To(Succeed())
+			Expect(fetched.Spec.DMPasswordMode).To(Equal("env"))
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+		})
+
+		It("should accept env mode", func() {
+			ds := validDS("valid-dm-env")
+			ds.Spec.DMPasswordMode = "env"
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+		})
+
+		It("should accept file mode", func() {
+			ds := validDS("valid-dm-file")
+			ds.Spec.DMPasswordMode = "file"
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+		})
+
+		It("should reject invalid mode", func() {
+			ds := validDS("invalid-dm-mode")
+			ds.Spec.DMPasswordMode = "invalid"
+			err := k8sClient.Create(ctx, ds)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("dmPasswordMode"))
+		})
+	})
 })

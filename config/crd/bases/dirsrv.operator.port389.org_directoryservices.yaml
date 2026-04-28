@@ -57,6 +57,17 @@ spec:
             description: DirectoryServiceSpec defines the desired state of a 389 Directory
               Server instance.
             properties:
+              dmPasswordMode:
+                default: env
+                description: |-
+                  DMPasswordMode controls how the Directory Manager password is injected into the container.
+                    - "env": injects via DS_DM_PASSWORD environment variable (supported by all 389DS container versions).
+                    - "file": mounts the Secret as a file and sets DS_DM_PASSWORD_FILE.
+                      Requires 389DS container image with DS_DM_PASSWORD_FILE support.
+                enum:
+                - env
+                - file
+                type: string
               dmPasswordSecretRef:
                 description: |-
                   DMPasswordSecretRef references a Secret containing the Directory Manager password.
