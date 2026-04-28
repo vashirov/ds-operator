@@ -26,6 +26,7 @@ import (
 type DirectoryServiceSpec struct {
 	// Image is the 389DS container image to deploy.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
 	// Replicas is the number of DS pods in the StatefulSet.
@@ -66,6 +67,7 @@ type SuffixSpec struct {
 
 	// DN is the suffix distinguished name (e.g. "dc=example,dc=com").
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	DN string `json:"dn"`
 
 	// CreateEntries populates the suffix with sample organizational entries on creation.

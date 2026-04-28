@@ -76,6 +76,7 @@ spec:
                 x-kubernetes-map-type: atomic
               image:
                 description: Image is the 389DS container image to deploy.
+                minLength: 1
                 type: string
               ports:
                 description: Ports configures LDAP and LDAPS listener ports.
@@ -192,6 +193,7 @@ spec:
                       type: boolean
                     dn:
                       description: DN is the suffix distinguished name (e.g. "dc=example,dc=com").
+                      minLength: 1
                       type: string
                     name:
                       description: Name is the backend database name (e.g. "userroot").
