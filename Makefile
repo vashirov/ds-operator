@@ -29,7 +29,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # operator.port389.org/ds-operator-bundle:$VERSION and operator.port389.org/ds-operator-catalog:$VERSION.
-IMAGE_TAG_BASE ?= operator.port389.org/ds-operator
+IMAGE_TAG_BASE ?= ghcr.io/389ds/ds-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -50,7 +50,7 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.0
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= ghcr.io/389ds/ds-operator:v$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -60,10 +60,8 @@ GOBIN=$(shell go env GOBIN)
 endif
 
 # CONTAINER_TOOL defines the container tool to be used for building images.
-# Be aware that the target commands are only tested with Docker which is
-# scaffolded by default. However, you might want to replace it to use other
-# tools. (i.e. podman)
-CONTAINER_TOOL ?= docker
+# Auto-detects podman or docker if not explicitly set.
+CONTAINER_TOOL ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -119,11 +117,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER ?= ds-operator-test-e2e
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
+setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
@@ -134,7 +128,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER=$(KIND_CLUSTER) KIND_BIN=$(KIND) go test ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
@@ -154,9 +148,8 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
 .PHONY: setup-hooks
-setup-hooks: ## Install pre-commit hooks via prek
-	@command -v prek >/dev/null 2>&1 || { echo "prek not found. Install from https://prek.j178.dev"; exit 1; }
-	prek install
+setup-hooks: prek ## Install pre-commit hooks via prek
+	$(PREK) install
 
 ##@ Build
 
@@ -234,13 +227,15 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
-KIND ?= kind
+KIND ?= $(LOCALBIN)/kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
+KIND_VERSION ?= v0.31.0
+PREK_VERSION ?= v0.3.11
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
@@ -276,6 +271,24 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
+
+PREK ?= $(LOCALBIN)/prek
+.PHONY: prek
+prek: $(PREK) ## Download prek locally if necessary.
+$(PREK): $(LOCALBIN)
+	@[ -f "$(PREK)" ] || { \
+	set -e; \
+	echo "Downloading prek $(PREK_VERSION)"; \
+	ARCH=$$(uname -m); \
+	case "$$(uname -s)" in Darwin) TARGET="$$ARCH-apple-darwin";; Linux) TARGET="$$ARCH-unknown-linux-gnu";; esac; \
+	curl -sSL "https://github.com/j178/prek/releases/download/$(PREK_VERSION)/prek-$$TARGET.tar.gz" | tar xz --strip-components=1 -C $(LOCALBIN); \
+	chmod +x $(PREK); \
+	}
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

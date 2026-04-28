@@ -165,6 +165,15 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
+// kindBin returns the path to the kind binary.
+// It checks KIND_BIN env var first, then falls back to "kind" in PATH.
+func kindBin() string {
+	if v, ok := os.LookupEnv("KIND_BIN"); ok {
+		return v
+	}
+	return "kind"
+}
+
 // LoadImageToKindClusterWithName loads a local container image to the kind cluster.
 // When KIND_EXPERIMENTAL_PROVIDER=podman, it saves the image to an archive first
 // and uses "kind load image-archive" since "kind load docker-image" may not find
@@ -174,6 +183,8 @@ func LoadImageToKindClusterWithName(name string) error {
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+
+	kind := kindBin()
 
 	if os.Getenv("KIND_EXPERIMENTAL_PROVIDER") == "podman" {
 		// Save image to a temp archive file
@@ -192,13 +203,13 @@ func LoadImageToKindClusterWithName(name string) error {
 			return fmt.Errorf("failed to save image to archive: %w", err)
 		}
 
-		loadCmd := exec.Command("kind", "load", "image-archive", archivePath, "--name", cluster)
+		loadCmd := exec.Command(kind, "load", "image-archive", archivePath, "--name", cluster)
 		_, err = Run(loadCmd)
 		return err
 	}
 
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
+	cmd := exec.Command(kind, kindOptions...)
 	_, err := Run(cmd)
 	return err
 }
