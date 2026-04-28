@@ -1,4 +1,4 @@
-# ds-operator
+# 389 Directory Server operator
 
 A Kubernetes operator for managing [389 Directory Server](https://www.port389.org/) instances.
 It automates deployment, configuration, and lifecycle management of 389DS via a `DirectoryService` custom resource.
