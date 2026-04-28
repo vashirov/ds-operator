@@ -153,6 +153,11 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: setup-hooks
+setup-hooks: ## Install pre-commit hooks via prek
+	@command -v prek >/dev/null 2>&1 || { echo "prek not found. Install from https://prek.j178.dev"; exit 1; }
+	prek install
+
 ##@ Build
 
 .PHONY: build
