@@ -63,6 +63,12 @@ endif
 # Auto-detects podman or docker if not explicitly set.
 CONTAINER_TOOL ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
+# Set KIND_EXPERIMENTAL_PROVIDER=podman when podman is the detected container tool,
+# so Kind uses podman as its backend automatically.
+ifeq ($(notdir $(CONTAINER_TOOL)),podman)
+export KIND_EXPERIMENTAL_PROVIDER ?= podman
+endif
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
