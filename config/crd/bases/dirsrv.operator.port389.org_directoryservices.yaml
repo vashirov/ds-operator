@@ -12,7 +12,7 @@ spec:
     listKind: DirectoryServiceList
     plural: directoryservices
     shortNames:
-    - ds
+    - dirsrv
     singular: directoryservice
   scope: Namespaced
   versions:
