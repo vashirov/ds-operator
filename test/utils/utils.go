@@ -182,8 +182,10 @@ func LoadImageToKindClusterWithName(name string) error {
 			return fmt.Errorf("failed to create temp file for image archive: %w", err)
 		}
 		archivePath := tmpFile.Name()
-		tmpFile.Close()
-		defer os.Remove(archivePath)
+		if err := tmpFile.Close(); err != nil {
+			return fmt.Errorf("failed to close temp file: %w", err)
+		}
+		defer func() { _ = os.Remove(archivePath) }()
 
 		saveCmd := exec.Command("podman", "save", name, "-o", archivePath)
 		if _, err := Run(saveCmd); err != nil {
