@@ -80,7 +80,7 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Fetch the DirectoryService instance
 	ds := &operatorv1alpha1.DirectoryService{}
 	if err := r.Get(ctx, req.NamespacedName, ds); err != nil {
-		// CR deleted — owned resources are garbage-collected via OwnerReferences
+		// CR deleted - owned resources are garbage-collected via OwnerReferences
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -91,10 +91,12 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("reconciling DM password secret: %w", err)
 	}
 
+	// ConfigMap updates are independent of pod template - no pod restart triggered.
 	if err := r.reconcileConfigMap(ctx, ds); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling configmap: %w", err)
 	}
 
+	// Service updates (port changes) are independent of pods - no restart needed.
 	if err := r.reconcileHeadlessService(ctx, ds); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling headless service: %w", err)
 	}
@@ -103,6 +105,8 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("reconciling service: %w", err)
 	}
 
+	// StatefulSet update: replicas changes scale without restart; pod template changes
+	// (image, container ports, resources, dmPasswordMode) trigger a RollingUpdate.
 	if err := r.reconcileStatefulSet(ctx, ds); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling statefulset: %w", err)
 	}
@@ -191,7 +195,7 @@ func generatePassword() (string, error) {
 func (r *DirectoryServiceReconciler) reconcileDMPasswordSecret(
 	ctx context.Context, ds *operatorv1alpha1.DirectoryService,
 ) error {
-	// If user provided a secret ref, don't create one — just verify it exists
+	// If user provided a secret ref, don't create one - just verify it exists
 	if ds.Spec.DMPasswordSecretRef != nil && ds.Spec.DMPasswordSecretRef.Name != "" {
 		existing := &corev1.Secret{}
 		return r.Get(ctx, types.NamespacedName{
@@ -390,16 +394,18 @@ func (r *DirectoryServiceReconciler) reconcileStatefulSet(
 		return err
 	}
 
-	// Update mutable fields
 	needsUpdate := false
+
 	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 		existing.Spec.Replicas = desired.Spec.Replicas
 		needsUpdate = true
 	}
-	if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec.Containers, desired.Spec.Template.Spec.Containers) {
-		existing.Spec.Template.Spec.Containers = desired.Spec.Template.Spec.Containers
+
+	if !equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) {
+		existing.Spec.Template = desired.Spec.Template
 		needsUpdate = true
 	}
+
 	if needsUpdate {
 		return r.Update(ctx, existing)
 	}
@@ -456,14 +462,14 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 
 	var volumes []corev1.Volume
 
-	// DM password injection — mode determines env var vs file mount.
+	// DM password injection - mode determines env var vs file mount.
 	switch dmPasswordMode(ds) {
 	case dmPasswordModeFile:
 		// File-based: mount Secret as a volume, set DS_DM_PASSWORD_FILE env var.
-		// More secure — password not visible in /proc/<pid>/environ.
+		// More secure - password not visible in /proc/<pid>/environ.
 		//
 		// NOTE: DS_DM_PASSWORD_FILE is not yet supported by the upstream dscontainer
-		// entrypoint. This mode is provided for forward-compatibility — when upstream
+		// entrypoint. This mode is provided for forward-compatibility - when upstream
 		// adds support, users can switch to "file" mode for improved security.
 		// Track upstream: https://github.com/389ds/389-ds-base
 		container.Env = append(container.Env, corev1.EnvVar{
@@ -485,7 +491,7 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 		})
 	default:
 		// Env-based (default): inject DS_DM_PASSWORD from Secret via secretKeyRef.
-		// Supported by all 389DS container image versions. Less secure — password
+		// Supported by all 389DS container image versions. Less secure - password
 		// visible in /proc/<pid>/environ and inherited by child processes.
 		container.Env = append(container.Env, corev1.EnvVar{
 			Name: "DS_DM_PASSWORD",
@@ -498,6 +504,10 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 		})
 	}
 
+	updateStrategy := appsv1.StatefulSetUpdateStrategy{
+		Type: appsv1.RollingUpdateStatefulSetStrategyType,
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ds.Name,
@@ -505,8 +515,9 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 			Labels:    lbls,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName: headlessServiceName(ds),
-			Replicas:    &replicas,
+			ServiceName:    headlessServiceName(ds),
+			Replicas:       &replicas,
+			UpdateStrategy: updateStrategy,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: lbls,
 			},

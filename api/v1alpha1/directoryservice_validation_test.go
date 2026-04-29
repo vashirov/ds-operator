@@ -184,7 +184,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 
 		// Note: port = 0 with omitempty is treated as absent by JSON serialization,
 		// so the kubebuilder default (3389/3636) applies and validation passes.
-		// This is correct behavior — zero means "use default".
+		// This is correct behavior - zero means "use default".
 		It("should apply default when port is 0 (omitempty)", func() {
 			ds := validDS("valid-port-zero-default")
 			ds.Spec.Ports = &operatorv1alpha1.PortSpec{

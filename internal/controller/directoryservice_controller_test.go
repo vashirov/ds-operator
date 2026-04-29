@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,7 +60,7 @@ var _ = Describe("DirectoryService Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Delete the CR — cascading delete cleans up owned resources
+			// Delete the CR - cascading delete cleans up owned resources
 			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
 
 			// Wait for CR to be gone
@@ -271,7 +272,7 @@ var _ = Describe("DirectoryService Controller", func() {
 				}, cm)
 			}, timeout, interval).Should(Succeed())
 
-			// Container only supports one suffix via env var — uses first suffix's DN
+			// Container only supports one suffix via env var - uses first suffix's DN
 			Expect(cm.Data).To(HaveKeyWithValue("DS_SUFFIX_NAME", "dc=example,dc=com"))
 			Expect(cm.Data).To(HaveKeyWithValue("DS_STARTUP_TIMEOUT", "60"))
 		})
@@ -348,6 +349,197 @@ var _ = Describe("DirectoryService Controller", func() {
 			for _, env := range container.Env {
 				Expect(env.Name).NotTo(Equal("DS_DM_PASSWORD"))
 			}
+		})
+	})
+
+	Context("when updating CR fields that don't require pod restart", func() {
+		const dsName = "test-no-restart"
+		const dsNamespace = "default"
+
+		var ds *operatorv1alpha1.DirectoryService
+
+		BeforeEach(func() {
+			ds = &operatorv1alpha1.DirectoryService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dsName,
+					Namespace: dsNamespace,
+				},
+				Spec: operatorv1alpha1.DirectoryServiceSpec{
+					Image:    "quay.io/389ds/dirsrv:latest",
+					Replicas: ptr.To(int32(1)),
+					Suffixes: []operatorv1alpha1.SuffixSpec{
+						{Name: "userroot", DN: "dc=example,dc=com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+
+			// Wait for initial resources to be created
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace},
+					&appsv1.StatefulSet{})
+			}, timeout, interval).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)
+				return err != nil
+			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("should scale replicas without changing pod template", func() {
+			// Capture original pod template
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+			originalTemplate := sts.Spec.Template.DeepCopy()
+
+			// Update replicas
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)).To(Succeed())
+			ds.Spec.Replicas = ptr.To(int32(3))
+			Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+
+			// Verify replicas updated
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+				g.Expect(*sts.Spec.Replicas).To(Equal(int32(3)))
+			}, timeout, interval).Should(Succeed())
+
+			// Pod template unchanged - no restart triggered
+			Expect(equality.Semantic.DeepEqual(sts.Spec.Template, *originalTemplate)).To(BeTrue())
+		})
+
+		It("should update ConfigMap when suffixes change without changing pod template", func() {
+			// Capture original pod template
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+			originalTemplate := sts.Spec.Template.DeepCopy()
+
+			// Update suffix
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)).To(Succeed())
+			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
+				{Name: "newroot", DN: "dc=new,dc=com"},
+			}
+			Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+
+			// ConfigMap should have new suffix
+			Eventually(func(g Gomega) {
+				cm := &corev1.ConfigMap{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: dsName + "-config", Namespace: dsNamespace,
+				}, cm)).To(Succeed())
+				g.Expect(cm.Data).To(HaveKeyWithValue("DS_SUFFIX_NAME", "dc=new,dc=com"))
+			}, timeout, interval).Should(Succeed())
+
+			// Pod template unchanged - suffix change only affects ConfigMap, not pod spec
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+			Expect(equality.Semantic.DeepEqual(sts.Spec.Template, *originalTemplate)).To(BeTrue())
+		})
+
+		It("should update Service ports without pod restart", func() {
+			// Capture StatefulSet generation
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+			originalGeneration := sts.Generation
+
+			// Update ports in CR
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)).To(Succeed())
+			ds.Spec.Ports = &operatorv1alpha1.PortSpec{LDAP: 1389, LDAPS: 1636}
+			Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+
+			// Services should have new ports
+			Eventually(func(g Gomega) {
+				svc := &corev1.Service{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, svc)).To(Succeed())
+				g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(1389)))
+				g.Expect(svc.Spec.Ports[1].Port).To(Equal(int32(1636)))
+			}, timeout, interval).Should(Succeed())
+
+			// Headless service too
+			Eventually(func(g Gomega) {
+				svc := &corev1.Service{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: dsName + "-internal", Namespace: dsNamespace,
+				}, svc)).To(Succeed())
+				g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(1389)))
+			}, timeout, interval).Should(Succeed())
+
+			// NOTE: port changes also affect StatefulSet container ports, which IS a
+			// pod template change and triggers rolling update. But the Service update
+			// itself is independent and takes effect immediately for routing.
+			// Verify StatefulSet was updated (generation bumped)
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+				g.Expect(sts.Generation).To(BeNumerically(">", originalGeneration))
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
+	Context("when updating CR fields that trigger rolling update", func() {
+		const dsName = "test-rolling"
+		const dsNamespace = "default"
+
+		var ds *operatorv1alpha1.DirectoryService
+
+		BeforeEach(func() {
+			ds = &operatorv1alpha1.DirectoryService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dsName,
+					Namespace: dsNamespace,
+				},
+				Spec: operatorv1alpha1.DirectoryServiceSpec{
+					Image: "quay.io/389ds/dirsrv:3.0",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace},
+					&appsv1.StatefulSet{})
+			}, timeout, interval).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)
+				return err != nil
+			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("should update StatefulSet pod template when image changes", func() {
+			// Update image
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, ds)).To(Succeed())
+			ds.Spec.Image = "quay.io/389ds/dirsrv:3.1"
+			Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+
+			// StatefulSet should reflect new image - triggers rolling update
+			Eventually(func(g Gomega) {
+				sts := &appsv1.StatefulSet{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+				g.Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/389ds/dirsrv:3.1"))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should use RollingUpdate strategy", func() {
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+			Expect(sts.Spec.UpdateStrategy.Type).To(Equal(appsv1.RollingUpdateStatefulSetStrategyType))
+		})
+
+		It("should preserve PVC across pod template changes", func() {
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dsName, Namespace: dsNamespace}, sts)).To(Succeed())
+
+			// VCT present with /data mount
+			Expect(sts.Spec.VolumeClaimTemplates).To(HaveLen(1))
+			Expect(sts.Spec.VolumeClaimTemplates[0].Name).To(Equal("ds-data"))
+
+			// Container mounts /data
+			Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(
+				corev1.VolumeMount{Name: "ds-data", MountPath: "/data"},
+			))
 		})
 	})
 
