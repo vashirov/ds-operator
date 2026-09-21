@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	operatorv1alpha1 "github.com/389ds/ds-operator/api/v1alpha1"
+	"github.com/389ds/ds-operator/internal/upgrade"
 )
 
 const (
@@ -52,6 +54,7 @@ const (
 	phaseInitializing = "Initializing"
 	phaseRunning      = "Running"
 	phaseDegraded     = "Degraded"
+	phaseUpgrading    = "Upgrading"
 
 	// DM password injection modes.
 	dmPasswordModeEnv  = "env"
@@ -105,9 +108,7 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("reconciling service: %w", err)
 	}
 
-	// StatefulSet update: replicas changes scale without restart; pod template changes
-	// (image, container ports, resources, dmPasswordMode) trigger a RollingUpdate.
-	if err := r.reconcileStatefulSet(ctx, ds); err != nil {
+	if err := r.reconcileUpgrade(ctx, ds); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling statefulset: %w", err)
 	}
 
@@ -116,6 +117,91 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *DirectoryServiceReconciler) reconcileUpgrade(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService,
+) error {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)
+	if apierrors.IsNotFound(err) {
+		return r.reconcileStatefulSet(ctx, ds)
+	}
+	if err != nil {
+		return err
+	}
+
+	currentVersion := ds.Status.CurrentVersion
+	if currentVersion == "" {
+		currentVersion, _ = upgrade.ExtractVersionFromImage(sts.Spec.Template.Spec.Containers[0].Image)
+	}
+	targetVersion := ds.Spec.Version
+	if targetVersion == "" {
+		targetVersion = currentVersion
+	}
+	if ds.Status.CurrentVersion == "" && currentVersion != "" {
+		ds.Status.CurrentVersion = currentVersion
+	}
+
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
+		if ds.Status.TargetVersion != targetVersion {
+			return fmt.Errorf("cannot change target version while upgrade is active")
+		}
+	} else if currentVersion != "" && targetVersion != "" && targetVersion != currentVersion {
+		if err := upgrade.ValidateTarget(currentVersion, targetVersion); err != nil {
+			ds.Status.TargetVersion = targetVersion
+			ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
+				Phase:         "Failed",
+				FailureReason: err.Error(),
+				Message:       err.Error(),
+			}
+			meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+				Type:               "UpgradeSucceeded",
+				Status:             metav1.ConditionFalse,
+				Reason:             "InvalidUpgrade",
+				Message:            err.Error(),
+				ObservedGeneration: ds.Generation,
+			})
+			return nil
+		}
+		now := metav1.NewTime(time.Now())
+		ds.Status.CurrentVersion = currentVersion
+		ds.Status.TargetVersion = targetVersion
+		ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
+			Phase:     phaseUpgrading,
+			StartedAt: &now,
+			Message:   fmt.Sprintf("Starting upgrade from %s to %s", currentVersion, targetVersion),
+		}
+	}
+
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
+		return r.reconcileUpgradeStatefulSet(ctx, ds, sts)
+	}
+	return r.reconcileStatefulSet(ctx, ds)
+}
+
+func (r *DirectoryServiceReconciler) reconcileUpgradeStatefulSet(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService, existing *appsv1.StatefulSet,
+) error {
+	desired := r.desiredStatefulSet(ds)
+	if err := ctrl.SetControllerReference(ds, desired, r.Scheme); err != nil {
+		return err
+	}
+	needsUpdate := false
+	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+		existing.Spec.Replicas = desired.Spec.Replicas
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) ||
+		!equality.Semantic.DeepEqual(existing.Spec.UpdateStrategy, desired.Spec.UpdateStrategy) {
+		existing.Spec.Template = desired.Spec.Template
+		existing.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
+		needsUpdate = true
+	}
+	if needsUpdate {
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 // --- Helper functions ---
@@ -507,6 +593,18 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 	updateStrategy := appsv1.StatefulSetUpdateStrategy{
 		Type: appsv1.RollingUpdateStatefulSetStrategyType,
 	}
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
+		partition := replicas - 1
+		if ds.Status.Upgrade.UpdatedReplicas > 0 && ds.Status.Upgrade.UpdatedReplicas < replicas {
+			partition = replicas - ds.Status.Upgrade.UpdatedReplicas - 1
+		}
+		if partition < 0 {
+			partition = 0
+		}
+		updateStrategy.RollingUpdate = &appsv1.RollingUpdateStatefulSetStrategy{
+			Partition: &partition,
+		}
+	}
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -573,9 +671,24 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 	} else {
 		ds.Status.Replicas = sts.Status.Replicas
 		ds.Status.ReadyReplicas = sts.Status.ReadyReplicas
+		if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
+			ds.Status.Upgrade.UpdatedReplicas = sts.Status.UpdatedReplicas
+			ds.Status.Upgrade.ReadyReplicas = sts.Status.ReadyReplicas
+			ds.Status.Upgrade.Message = fmt.Sprintf("Upgrading %d/%d pods", sts.Status.UpdatedReplicas, sts.Status.Replicas)
+			if sts.Status.UpdatedReplicas == sts.Status.Replicas &&
+				sts.Status.ReadyReplicas == sts.Status.Replicas {
+				now := metav1.NewTime(time.Now())
+				ds.Status.CurrentVersion = ds.Status.TargetVersion
+				ds.Status.Upgrade.Phase = "Succeeded"
+				ds.Status.Upgrade.CompletedAt = &now
+				ds.Status.Upgrade.Message = "Upgrade completed"
+			}
+		}
 
 		desired := r.replicas(ds)
 		switch {
+		case ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading:
+			ds.Status.Phase = phaseUpgrading
 		case sts.Status.ReadyReplicas == desired:
 			ds.Status.Phase = phaseRunning
 		case sts.Status.ReadyReplicas > 0:

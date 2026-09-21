@@ -143,6 +143,43 @@ type DirectoryServiceStatus struct {
 	// Conditions represent the latest available observations of the instance's state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CurrentVersion is the last version confirmed healthy by the operator.
+	// +optional
+	CurrentVersion string `json:"currentVersion,omitempty"`
+
+	// TargetVersion is the version requested by the latest upgrade.
+	// +optional
+	TargetVersion string `json:"targetVersion,omitempty"`
+
+	// Upgrade contains the active upgrade progress.
+	// +optional
+	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+}
+
+// UpgradeStatus records the state of a version transition.
+type UpgradeStatus struct {
+	// Phase is the current upgrade phase.
+	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;RollingBack;RolledBack
+	Phase string `json:"phase,omitempty"`
+	// UpdatedReplicas is the number of replicas using the target template.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+	// ReadyReplicas is the number of ready replicas using the target template.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	// Message describes the current upgrade step.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// FailureReason describes why the upgrade stopped.
+	// +optional
+	FailureReason string `json:"failureReason,omitempty"`
+	// StartedAt records when the upgrade started.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// CompletedAt records when the upgrade ended.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
