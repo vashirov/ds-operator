@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -254,6 +255,41 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(metricsOutput).To(ContainSubstring(
 				"controller_runtime_reconcile_total",
 			))
+		})
+
+		It("should reject a version downgrade", func() {
+			manifest := `apiVersion: dirsrv.operator.port389.org/v1alpha1
+kind: DirectoryService
+metadata:
+  name: upgrade-e2e
+  namespace: ` + namespace + `
+spec:
+  image: quay.io/389ds/dirsrv:3.1.0
+  version: 3.1.0
+`
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(manifest)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "dirsrv", "upgrade-e2e", "-n", namespace))
+			})
+
+			patch := `{"spec":{"version":"3.0.0","image":"quay.io/389ds/dirsrv:3.0.0"}}`
+			Eventually(func() error {
+				cmd := exec.Command("kubectl", "patch", "dirsrv", "upgrade-e2e", "-n", namespace,
+					"--type", "merge", "-p", patch)
+				_, err := utils.Run(cmd)
+				return err
+			}, time.Minute, time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "dirsrv", "upgrade-e2e", "-n", namespace,
+					"-o", "jsonpath={.status.upgrade.failureReason}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("downgrade"))
+			}, time.Minute, time.Second).Should(Succeed())
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks

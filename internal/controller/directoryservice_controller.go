@@ -21,6 +21,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,11 +34,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	operatorv1alpha1 "github.com/389ds/ds-operator/api/v1alpha1"
+	"github.com/389ds/ds-operator/internal/upgrade"
 )
 
 const (
@@ -49,9 +53,18 @@ const (
 	dmSecretFilePath         = dmSecretMountPath + "/dm-password"
 
 	// Phase constants for DirectoryService status.
-	phaseInitializing = "Initializing"
-	phaseRunning      = "Running"
-	phaseDegraded     = "Degraded"
+	phaseInitializing  = "Initializing"
+	phaseRunning       = "Running"
+	phaseDegraded      = "Degraded"
+	phaseUpgrading     = "Upgrading"
+	phaseRollingBack   = "RollingBack"
+	phaseRolledBack    = "RolledBack"
+	phaseBlocked       = "Blocked"
+	rollbackAnnotation = "dirsrv.operator.port389.org/rollback-to"
+	approvalAnnotation = "dirsrv.operator.port389.org/approved-transition"
+	backupAnnotation   = "dirsrv.operator.port389.org/backup-confirmed"
+	upgradeTimeout     = 10 * time.Minute
+	upgradeRequeue     = 10 * time.Second
 
 	// DM password injection modes.
 	dmPasswordModeEnv  = "env"
@@ -61,7 +74,8 @@ const (
 // DirectoryServiceReconciler reconciles a DirectoryService object.
 type DirectoryServiceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservices,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +86,7 @@ type DirectoryServiceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles DirectoryService create/update/delete events.
 func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -105,9 +120,7 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("reconciling service: %w", err)
 	}
 
-	// StatefulSet update: replicas changes scale without restart; pod template changes
-	// (image, container ports, resources, dmPasswordMode) trigger a RollingUpdate.
-	if err := r.reconcileStatefulSet(ctx, ds); err != nil {
+	if err := r.reconcileUpgrade(ctx, ds); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling statefulset: %w", err)
 	}
 
@@ -115,7 +128,295 @@ func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}
 
+	if ds.Status.Upgrade != nil && (ds.Status.Upgrade.Phase == phaseUpgrading ||
+		ds.Status.Upgrade.Phase == phaseRollingBack) {
+		return ctrl.Result{RequeueAfter: upgradeRequeue}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// nolint:gocyclo
+func (r *DirectoryServiceReconciler) reconcileUpgrade(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService,
+) error {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)
+	if apierrors.IsNotFound(err) {
+		if err := validateImageVersion(ds); err != nil {
+			r.blockUpgrade(ds, err)
+			return nil
+		}
+		return r.reconcileStatefulSet(ctx, ds)
+	}
+	if err != nil {
+		return err
+	}
+	if err := r.handleRollbackRequest(ctx, ds, sts); err != nil {
+		return err
+	}
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseRollingBack {
+		return r.reconcileUpgradeStatefulSet(ctx, ds, sts)
+	}
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseRolledBack &&
+		ds.Spec.Version == ds.Status.Upgrade.BlockedVersion {
+		return nil
+	}
+
+	currentVersion := ds.Status.CurrentVersion
+	if currentVersion == "" {
+		currentVersion, err = upgrade.ExtractVersionFromImage(sts.Spec.Template.Spec.Containers[0].Image)
+		if err != nil {
+			if ds.Spec.Version != "" {
+				r.blockUpgrade(ds, fmt.Errorf("cannot determine current image version: %w", err))
+				return nil
+			}
+			return r.reconcileStatefulSet(ctx, ds)
+		}
+	}
+	targetVersion := ds.Spec.Version
+	if targetVersion == "" {
+		targetVersion = currentVersion
+	}
+	if ds.Status.CurrentVersion == "" && currentVersion != "" {
+		ds.Status.CurrentVersion = currentVersion
+	}
+	if err := validateImageVersion(ds); err != nil {
+		r.blockUpgrade(ds, err)
+		return nil
+	}
+	if ds.Spec.Version == "" && sts.Spec.Template.Spec.Containers[0].Image != ds.Spec.Image {
+		r.blockUpgrade(ds, fmt.Errorf("spec.version is required when changing a versioned image"))
+		return nil
+	}
+
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
+		if failed, reason := r.upgradeFailed(ctx, ds); failed {
+			r.beginRollback(ds, reason)
+			r.recordEvent(ds, "Warning", "RollbackStarted", reason)
+			return r.reconcileUpgradeStatefulSet(ctx, ds, sts)
+		}
+		if ds.Status.TargetVersion != targetVersion {
+			r.blockUpgrade(ds, fmt.Errorf("target version changed from %s to %s during active upgrade", ds.Status.TargetVersion, targetVersion))
+			return nil
+		}
+	} else if currentVersion != "" && targetVersion != "" && targetVersion != currentVersion {
+		approval := strings.TrimSpace(ds.Annotations[approvalAnnotation])
+		if err := upgrade.ValidateTransition(currentVersion, targetVersion, approval); err != nil {
+			r.blockUpgrade(ds, err)
+			return nil
+		}
+		if upgrade.RequiresBackup(currentVersion, targetVersion) &&
+			strings.TrimSpace(ds.Annotations[backupAnnotation]) != approval {
+			r.blockUpgrade(ds, fmt.Errorf("transition %s requires backup confirmation %q", approval, approval))
+			return nil
+		}
+		now := metav1.NewTime(time.Now())
+		deadline := metav1.NewTime(now.Add(upgradeTimeout))
+		ds.Status.CurrentVersion = currentVersion
+		ds.Status.TargetVersion = targetVersion
+		ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
+			OperationID:        newOperationID(),
+			ObservedGeneration: ds.Generation,
+			FromVersion:        currentVersion,
+			FromImage:          sts.Spec.Template.Spec.Containers[0].Image,
+			TargetImage:        ds.Spec.Image,
+			AttemptedVersion:   targetVersion,
+			AttemptedImage:     ds.Spec.Image,
+			Phase:              phaseUpgrading,
+			StartedAt:          &now,
+			DeadlineAt:         &deadline,
+			Message:            fmt.Sprintf("Starting upgrade from %s to %s", currentVersion, targetVersion),
+		}
+		r.recordEvent(ds, "Normal", "UpgradeStarted", ds.Status.Upgrade.Message)
+		meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+			Type:               "UpgradeInProgress",
+			Status:             metav1.ConditionTrue,
+			Reason:             "UpgradeStarted",
+			Message:            ds.Status.Upgrade.Message,
+			ObservedGeneration: ds.Generation,
+		})
+	}
+
+	if ds.Status.Upgrade != nil && (ds.Status.Upgrade.Phase == phaseUpgrading ||
+		ds.Status.Upgrade.Phase == phaseRollingBack) {
+		return r.reconcileUpgradeStatefulSet(ctx, ds, sts)
+	}
+	return r.reconcileStatefulSet(ctx, ds)
+}
+
+func validateImageVersion(ds *operatorv1alpha1.DirectoryService) error {
+	if ds.Spec.Version == "" {
+		return nil
+	}
+	imageVersion, err := upgrade.ExtractVersionFromImage(ds.Spec.Image)
+	if err != nil {
+		return fmt.Errorf("spec.version requires a versioned image: %w", err)
+	}
+	specVersion, err := upgrade.ParseVersion(ds.Spec.Version)
+	if err != nil {
+		return fmt.Errorf("invalid spec.version: %w", err)
+	}
+	if imageVersion != specVersion.String() {
+		return fmt.Errorf("spec.version %s does not match image version %s", ds.Spec.Version, imageVersion)
+	}
+	return nil
+}
+
+func newOperationID() string {
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
+}
+
+func (r *DirectoryServiceReconciler) blockUpgrade(ds *operatorv1alpha1.DirectoryService, err error) {
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseBlocked &&
+		ds.Status.Upgrade.FailureReason == err.Error() {
+		return
+	}
+	ds.Status.TargetVersion = ds.Spec.Version
+	ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
+		Phase:              phaseBlocked,
+		FailureReason:      err.Error(),
+		Message:            err.Error(),
+		ObservedGeneration: ds.Generation,
+	}
+	r.recordEvent(ds, "Warning", "UpgradeBlocked", err.Error())
+	meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+		Type:               "UpgradeSucceeded",
+		Status:             metav1.ConditionFalse,
+		Reason:             "UpgradeBlocked",
+		Message:            err.Error(),
+		ObservedGeneration: ds.Generation,
+	})
+}
+
+func (r *DirectoryServiceReconciler) reconcileUpgradeStatefulSet(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService, existing *appsv1.StatefulSet,
+) error {
+	desired := r.desiredStatefulSet(ds)
+	if err := ctrl.SetControllerReference(ds, desired, r.Scheme); err != nil {
+		return err
+	}
+	needsUpdate := false
+	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+		existing.Spec.Replicas = desired.Spec.Replicas
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existing.Spec.Template, desired.Spec.Template) ||
+		!equality.Semantic.DeepEqual(existing.Spec.UpdateStrategy, desired.Spec.UpdateStrategy) {
+		existing.Spec.Template = desired.Spec.Template
+		existing.Spec.UpdateStrategy = desired.Spec.UpdateStrategy
+		needsUpdate = true
+	}
+	if needsUpdate {
+		return r.Update(ctx, existing)
+	}
+	return nil
+}
+
+func (r *DirectoryServiceReconciler) handleRollbackRequest(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService, sts *appsv1.StatefulSet,
+) error {
+	target := strings.TrimSpace(ds.Annotations[rollbackAnnotation])
+	if target == "" || (ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseRollingBack) {
+		return nil
+	}
+	var fromImage string
+	for _, item := range ds.Status.History {
+		if item.FromVersion == target {
+			fromImage = item.FromImage
+			break
+		}
+		if item.ToVersion == target {
+			fromImage = item.ToImage
+			break
+		}
+	}
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.FromVersion == target {
+		fromImage = ds.Status.Upgrade.FromImage
+	}
+	if fromImage == "" {
+		reason := fmt.Sprintf("rollback target %q is not available", target)
+		ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
+			Phase:         "Failed",
+			FailureReason: reason,
+			Message:       reason,
+		}
+		r.recordEvent(ds, "Warning", "InvalidRollback", reason)
+		return nil
+	}
+	approval := strings.TrimSpace(ds.Annotations[approvalAnnotation])
+	if err := upgrade.ValidateTransition(ds.Status.CurrentVersion, target, approval); err != nil {
+		r.blockUpgrade(ds, err)
+		return nil
+	}
+	if upgrade.RequiresBackup(ds.Status.CurrentVersion, target) &&
+		strings.TrimSpace(ds.Annotations[backupAnnotation]) != approval {
+		r.blockUpgrade(ds, fmt.Errorf("transition %s requires backup confirmation %q", approval, approval))
+		return nil
+	}
+	now := metav1.NewTime(time.Now())
+	if ds.Status.Upgrade == nil {
+		ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{}
+	}
+	ds.Status.TargetVersion = target
+	ds.Status.Upgrade.OperationID = newOperationID()
+	ds.Status.Upgrade.ObservedGeneration = ds.Generation
+	ds.Status.Upgrade.FromVersion = ds.Status.CurrentVersion
+	ds.Status.Upgrade.FromImage = sts.Spec.Template.Spec.Containers[0].Image
+	ds.Status.Upgrade.TargetImage = fromImage
+	ds.Status.Upgrade.AttemptedVersion = target
+	ds.Status.Upgrade.AttemptedImage = fromImage
+	ds.Status.Upgrade.BlockedVersion = ds.Spec.Version
+	ds.Status.Upgrade.Phase = phaseRollingBack
+	ds.Status.Upgrade.StartedAt = &now
+	ds.Status.Upgrade.UpdatedReplicas = 0
+	ds.Status.Upgrade.ReadyReplicas = 0
+	deadline := metav1.NewTime(now.Add(upgradeTimeout))
+	ds.Status.Upgrade.DeadlineAt = &deadline
+	ds.Status.Upgrade.Message = fmt.Sprintf("Rolling back to %s", target)
+	delete(ds.Annotations, rollbackAnnotation)
+	if err := r.Update(ctx, ds); err != nil {
+		return err
+	}
+	return r.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)
+}
+
+func (r *DirectoryServiceReconciler) upgradeFailed(
+	ctx context.Context, ds *operatorv1alpha1.DirectoryService,
+) (bool, string) {
+	if ds.Status.Upgrade == nil || ds.Status.Upgrade.StartedAt == nil {
+		return false, ""
+	}
+	if ds.Status.Upgrade.DeadlineAt != nil && time.Now().After(ds.Status.Upgrade.DeadlineAt.Time) {
+		return true, "upgrade health check timed out"
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(ds.Namespace), client.MatchingLabels(labels(ds))); err != nil {
+		return false, ""
+	}
+	for _, pod := range pods.Items {
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.State.Waiting != nil && (status.State.Waiting.Reason == "CrashLoopBackOff" ||
+				status.State.Waiting.Reason == "ImagePullBackOff" || status.State.Waiting.Reason == "ErrImagePull") {
+				return true, fmt.Sprintf("pod %s failed: %s", pod.Name, status.State.Waiting.Reason)
+			}
+		}
+	}
+	return false, ""
+}
+
+func (r *DirectoryServiceReconciler) beginRollback(ds *operatorv1alpha1.DirectoryService, reason string) {
+	ds.Status.Upgrade.BlockedVersion = ds.Spec.Version
+	ds.Status.TargetVersion = ds.Status.Upgrade.FromVersion
+	ds.Status.Upgrade.TargetImage = ds.Status.Upgrade.FromImage
+	ds.Status.Upgrade.Phase = phaseRollingBack
+	ds.Status.Upgrade.FailureReason = reason
+	ds.Status.Upgrade.Message = "Rolling back after upgrade failure"
+	ds.Status.Upgrade.UpdatedReplicas = 0
+	ds.Status.Upgrade.ReadyReplicas = 0
 }
 
 // --- Helper functions ---
@@ -455,6 +756,9 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 			PeriodSeconds:       15,
 		},
 	}
+	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseRollingBack {
+		container.Image = ds.Status.Upgrade.TargetImage
+	}
 
 	if ds.Spec.Resources != nil {
 		container.Resources = *ds.Spec.Resources
@@ -506,6 +810,19 @@ func (r *DirectoryServiceReconciler) desiredStatefulSet(
 
 	updateStrategy := appsv1.StatefulSetUpdateStrategy{
 		Type: appsv1.RollingUpdateStatefulSetStrategyType,
+	}
+	if ds.Status.Upgrade != nil && (ds.Status.Upgrade.Phase == phaseUpgrading ||
+		ds.Status.Upgrade.Phase == phaseRollingBack) {
+		partition := replicas - 1
+		if ds.Status.Upgrade.UpdatedReplicas > 0 && ds.Status.Upgrade.UpdatedReplicas < replicas {
+			partition = replicas - ds.Status.Upgrade.UpdatedReplicas - 1
+		}
+		if partition < 0 {
+			partition = 0
+		}
+		updateStrategy.RollingUpdate = &appsv1.RollingUpdateStatefulSetStrategy{
+			Partition: &partition,
+		}
 	}
 
 	sts := &appsv1.StatefulSet{
@@ -564,7 +881,11 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 	err := r.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			ds.Status.Phase = phaseInitializing
+			if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseBlocked {
+				ds.Status.Phase = phaseBlocked
+			} else {
+				ds.Status.Phase = phaseInitializing
+			}
 			ds.Status.Replicas = 0
 			ds.Status.ReadyReplicas = 0
 		} else {
@@ -573,9 +894,52 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 	} else {
 		ds.Status.Replicas = sts.Status.Replicas
 		ds.Status.ReadyReplicas = sts.Status.ReadyReplicas
+		if ds.Status.Upgrade != nil && (ds.Status.Upgrade.Phase == phaseUpgrading ||
+			ds.Status.Upgrade.Phase == phaseRollingBack) {
+			ds.Status.Upgrade.UpdatedReplicas = sts.Status.UpdatedReplicas
+			ds.Status.Upgrade.ReadyReplicas = sts.Status.ReadyReplicas
+			ds.Status.Upgrade.Message = fmt.Sprintf("Updating %d/%d pods", sts.Status.UpdatedReplicas, sts.Status.Replicas)
+			if sts.Status.Replicas > 0 &&
+				sts.Status.UpdatedReplicas == sts.Status.Replicas &&
+				sts.Status.ReadyReplicas == sts.Status.Replicas {
+				wasUpgrading := ds.Status.Upgrade.Phase == phaseUpgrading
+				wasRollingBack := ds.Status.Upgrade.Phase == phaseRollingBack
+				now := metav1.NewTime(time.Now())
+				ds.Status.CurrentVersion = ds.Status.TargetVersion
+				ds.Status.Upgrade.Phase = "Succeeded"
+				if wasRollingBack {
+					ds.Status.Upgrade.Phase = phaseRolledBack
+				}
+				ds.Status.Upgrade.CompletedAt = &now
+				ds.Status.Upgrade.Message = "Upgrade completed"
+				if wasRollingBack {
+					ds.Status.Upgrade.Message = "Rollback completed"
+				}
+				if wasUpgrading || wasRollingBack {
+					reason := "UpgradeCompleted"
+					if wasRollingBack {
+						reason = "RollbackCompleted"
+					}
+					r.recordEvent(ds, "Normal", reason, ds.Status.Upgrade.Message)
+					meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+						Type:               "UpgradeSucceeded",
+						Status:             metav1.ConditionTrue,
+						Reason:             "UpgradeCompleted",
+						Message:            ds.Status.Upgrade.Message,
+						ObservedGeneration: ds.Generation,
+					})
+					r.appendUpgradeHistory(ds, wasRollingBack)
+				}
+			}
+		}
 
 		desired := r.replicas(ds)
 		switch {
+		case ds.Status.Upgrade != nil && (ds.Status.Upgrade.Phase == phaseUpgrading ||
+			ds.Status.Upgrade.Phase == phaseRollingBack):
+			ds.Status.Phase = phaseUpgrading
+		case ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseBlocked:
+			ds.Status.Phase = phaseBlocked
 		case sts.Status.ReadyReplicas == desired:
 			ds.Status.Phase = phaseRunning
 		case sts.Status.ReadyReplicas > 0:
@@ -603,6 +967,41 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 	})
 
 	return r.Status().Update(ctx, ds)
+}
+
+func (r *DirectoryServiceReconciler) recordEvent(
+	ds *operatorv1alpha1.DirectoryService, eventType, reason, message string,
+) {
+	if r.Recorder != nil {
+		r.Recorder.Event(ds, eventType, reason, message)
+	}
+}
+
+func (r *DirectoryServiceReconciler) appendUpgradeHistory(ds *operatorv1alpha1.DirectoryService, rolledBack bool) {
+	if ds.Status.Upgrade == nil || ds.Status.Upgrade.StartedAt == nil || ds.Status.Upgrade.CompletedAt == nil {
+		return
+	}
+	for _, item := range ds.Status.History {
+		if item.StartedAt.Time.Equal(ds.Status.Upgrade.StartedAt.Time) {
+			return
+		}
+	}
+	ds.Status.History = append(ds.Status.History, operatorv1alpha1.UpgradeRecord{
+		FromVersion:   ds.Status.Upgrade.FromVersion,
+		ToVersion:     ds.Status.Upgrade.AttemptedVersion,
+		FromImage:     ds.Status.Upgrade.FromImage,
+		ToImage:       ds.Status.Upgrade.AttemptedImage,
+		Result:        "Succeeded",
+		FailureReason: ds.Status.Upgrade.FailureReason,
+		StartedAt:     *ds.Status.Upgrade.StartedAt,
+		CompletedAt:   *ds.Status.Upgrade.CompletedAt,
+	})
+	if rolledBack {
+		ds.Status.History[len(ds.Status.History)-1].Result = "RolledBack"
+	}
+	if len(ds.Status.History) > 5 {
+		ds.Status.History = ds.Status.History[len(ds.Status.History)-5:]
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
