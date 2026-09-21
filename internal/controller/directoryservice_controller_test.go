@@ -627,4 +627,25 @@ var _ = Describe("DirectoryService Controller", func() {
 			}, timeout, interval).Should(Succeed())
 		})
 	})
+
+	Context("when tracking an upgrade version", func() {
+		It("should record the observed image version", func() {
+			ds := &operatorv1alpha1.DirectoryService{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-version-status", Namespace: "default"},
+				Spec: operatorv1alpha1.DirectoryServiceSpec{
+					Image:   "quay.io/389ds/dirsrv:3.0.0",
+					Version: "3.0.0",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: ds.Name, Namespace: ds.Namespace,
+				}, fetched)).To(Succeed())
+				g.Expect(fetched.Status.CurrentVersion).To(Equal("3.0.0"))
+			}, timeout, interval).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+		})
+	})
 })
