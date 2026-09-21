@@ -29,6 +29,11 @@ import (
 	operatorv1alpha1 "github.com/389ds/ds-operator/api/v1alpha1"
 )
 
+const (
+	exampleSuffixDN = "dc=example,dc=com"
+	userrootName    = "userroot"
+)
+
 var _ = Describe("DirectoryService CRD Validation", func() {
 
 	// validDS returns a minimal valid DirectoryService for use as a base in tests.
@@ -56,7 +61,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 			ds := validDS("valid-full")
 			ds.Spec.Replicas = ptr.To(int32(3))
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "userroot", DN: "dc=example,dc=com", CreateEntries: true},
+				{Name: userrootName, DN: exampleSuffixDN, CreateEntries: true},
 			}
 			ds.Spec.Storage = &operatorv1alpha1.StorageSpec{
 				Size: resource.MustParse("10Gi"),
@@ -119,7 +124,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 		It("should reject suffix name starting with a digit", func() {
 			ds := validDS("invalid-suffix-digit")
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "123bad", DN: "dc=example,dc=com"},
+				{Name: "123bad", DN: exampleSuffixDN},
 			}
 			err := k8sClient.Create(ctx, ds)
 			Expect(err).To(HaveOccurred())
@@ -129,7 +134,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 		It("should reject suffix name with special characters", func() {
 			ds := validDS("invalid-suffix-special")
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "user@root", DN: "dc=example,dc=com"},
+				{Name: "user@root", DN: exampleSuffixDN},
 			}
 			err := k8sClient.Create(ctx, ds)
 			Expect(err).To(HaveOccurred())
@@ -139,7 +144,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 		It("should reject suffix without DN", func() {
 			ds := validDS("invalid-suffix-no-dn")
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "userroot"},
+				{Name: userrootName},
 			}
 			err := k8sClient.Create(ctx, ds)
 			Expect(err).To(HaveOccurred())
@@ -149,7 +154,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 		It("should accept suffix with hyphens and underscores", func() {
 			ds := validDS("valid-suffix-chars")
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "user-root_01", DN: "dc=example,dc=com"},
+				{Name: "user-root_01", DN: exampleSuffixDN},
 			}
 			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
@@ -158,7 +163,7 @@ var _ = Describe("DirectoryService CRD Validation", func() {
 		It("should accept multiple suffixes", func() {
 			ds := validDS("valid-multi-suffix")
 			ds.Spec.Suffixes = []operatorv1alpha1.SuffixSpec{
-				{Name: "userroot", DN: "dc=example,dc=com"},
+				{Name: userrootName, DN: exampleSuffixDN},
 				{Name: "serviceroot", DN: "dc=services,dc=example,dc=com"},
 			}
 			Expect(k8sClient.Create(ctx, ds)).To(Succeed())

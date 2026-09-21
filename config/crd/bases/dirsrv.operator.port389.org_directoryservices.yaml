@@ -122,7 +122,7 @@ spec:
                       Claims lists the names of resources, defined in spec.resourceClaims,
                       that are used by this container.
 
-                      This is an alpha field and requires enabling the
+                      This field depends on the
                       DynamicResourceAllocation feature gate.
 
                       This field is immutable. It can only be set for containers.
@@ -215,6 +215,12 @@ spec:
                   - name
                   type: object
                 type: array
+              version:
+                description: |-
+                  Version is the target 389DS semantic version. Existing resources may omit
+                  this field; the operator adopts their image version on first observation.
+                pattern: ^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$
+                type: string
             required:
             - image
             type: object
@@ -279,6 +285,36 @@ spec:
                   - type
                   type: object
                 type: array
+              currentVersion:
+                description: CurrentVersion is the last version confirmed healthy
+                  by the operator.
+                type: string
+              history:
+                description: History contains the latest completed upgrade attempts.
+                items:
+                  description: UpgradeRecord is a compact record of one completed
+                    upgrade attempt.
+                  properties:
+                    completedAt:
+                      format: date-time
+                      type: string
+                    failureReason:
+                      type: string
+                    fromImage:
+                      type: string
+                    fromVersion:
+                      type: string
+                    result:
+                      type: string
+                    startedAt:
+                      format: date-time
+                      type: string
+                    toImage:
+                      type: string
+                    toVersion:
+                      type: string
+                  type: object
+                type: array
               phase:
                 description: Phase represents the current lifecycle phase.
                 enum:
@@ -286,6 +322,10 @@ spec:
                 - Running
                 - Degraded
                 - Failed
+                - Blocked
+                - Upgrading
+                - RollingBack
+                - RolledBack
                 type: string
               readyReplicas:
                 description: ReadyReplicas is the number of pods that are ready.
@@ -300,6 +340,81 @@ spec:
                 description: SuffixesReady indicates whether all configured suffixes
                   have been created.
                 type: boolean
+              targetVersion:
+                description: TargetVersion is the version requested by the latest
+                  upgrade.
+                type: string
+              upgrade:
+                description: Upgrade contains the active upgrade progress.
+                properties:
+                  attemptedImage:
+                    description: AttemptedImage preserves the original image across
+                      rollback.
+                    type: string
+                  attemptedVersion:
+                    description: AttemptedVersion preserves the original target across
+                      rollback.
+                    type: string
+                  blockedVersion:
+                    description: BlockedVersion prevents an automatic retry after
+                      rollback.
+                    type: string
+                  completedAt:
+                    description: CompletedAt records when the upgrade ended.
+                    format: date-time
+                    type: string
+                  deadlineAt:
+                    description: DeadlineAt is the upgrade health-check deadline.
+                    format: date-time
+                    type: string
+                  failureReason:
+                    description: FailureReason describes why the upgrade stopped.
+                    type: string
+                  fromImage:
+                    description: FromImage is the last known good image.
+                    type: string
+                  fromVersion:
+                    description: FromVersion is the version before the upgrade.
+                    type: string
+                  message:
+                    description: Message describes the current upgrade step.
+                    type: string
+                  observedGeneration:
+                    description: ObservedGeneration is the spec generation being processed.
+                    format: int64
+                    type: integer
+                  operationID:
+                    description: OperationID identifies this upgrade attempt.
+                    type: string
+                  phase:
+                    description: Phase is the current upgrade phase.
+                    enum:
+                    - Validating
+                    - Upgrading
+                    - Succeeded
+                    - Failed
+                    - Blocked
+                    - RollingBack
+                    - RolledBack
+                    type: string
+                  readyReplicas:
+                    description: ReadyReplicas is the number of ready replicas using
+                      the target template.
+                    format: int32
+                    type: integer
+                  startedAt:
+                    description: StartedAt records when the upgrade started.
+                    format: date-time
+                    type: string
+                  targetImage:
+                    description: TargetImage is the image being deployed.
+                    type: string
+                  updatedReplicas:
+                    description: UpdatedReplicas is the number of replicas using the
+                      target template.
+                    format: int32
+                    type: integer
+                type: object
             type: object
         type: object
     served: true

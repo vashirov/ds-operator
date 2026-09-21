@@ -28,7 +28,7 @@ var (
 	// GroupVersion is group version used to register these objects.
 	GroupVersion = schema.GroupVersion{Group: "dirsrv.operator.port389.org", Version: "v1alpha1"}
 
-	// SchemeBuilder is used to add go types to the GroupVersionResource scheme.
+	//nolint:staticcheck // controller-runtime builder registers generated API types.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
 	// AddToScheme adds the types in this group-version to the given scheme.

@@ -29,6 +29,12 @@ type DirectoryServiceSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
+	// Version is the target 389DS semantic version. Existing resources may omit
+	// this field; the operator adopts their image version on first observation.
+	// +kubebuilder:validation:Pattern=`^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$`
+	// +optional
+	Version string `json:"version,omitempty"`
+
 	// Replicas is the number of DS pods in the StatefulSet.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
@@ -118,7 +124,7 @@ type PortSpec struct {
 // DirectoryServiceStatus defines the observed state of DirectoryService.
 type DirectoryServiceStatus struct {
 	// Phase represents the current lifecycle phase.
-	// +kubebuilder:validation:Enum=Initializing;Running;Degraded;Failed
+	// +kubebuilder:validation:Enum=Initializing;Running;Degraded;Failed;Blocked;Upgrading;RollingBack;RolledBack
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -137,6 +143,86 @@ type DirectoryServiceStatus struct {
 	// Conditions represent the latest available observations of the instance's state.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// CurrentVersion is the last version confirmed healthy by the operator.
+	// +optional
+	CurrentVersion string `json:"currentVersion,omitempty"`
+
+	// TargetVersion is the version requested by the latest upgrade.
+	// +optional
+	TargetVersion string `json:"targetVersion,omitempty"`
+
+	// Upgrade contains the active upgrade progress.
+	// +optional
+	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+
+	// History contains the latest completed upgrade attempts.
+	// +optional
+	History []UpgradeRecord `json:"history,omitempty"`
+}
+
+// UpgradeStatus records the state of a version transition.
+type UpgradeStatus struct {
+	// OperationID identifies this upgrade attempt.
+	// +optional
+	OperationID string `json:"operationID,omitempty"`
+	// ObservedGeneration is the spec generation being processed.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// FromVersion is the version before the upgrade.
+	// +optional
+	FromVersion string `json:"fromVersion,omitempty"`
+	// FromImage is the last known good image.
+	// +optional
+	FromImage string `json:"fromImage,omitempty"`
+	// TargetImage is the image being deployed.
+	// +optional
+	TargetImage string `json:"targetImage,omitempty"`
+	// AttemptedVersion preserves the original target across rollback.
+	// +optional
+	AttemptedVersion string `json:"attemptedVersion,omitempty"`
+	// AttemptedImage preserves the original image across rollback.
+	// +optional
+	AttemptedImage string `json:"attemptedImage,omitempty"`
+	// BlockedVersion prevents an automatic retry after rollback.
+	// +optional
+	BlockedVersion string `json:"blockedVersion,omitempty"`
+	// Phase is the current upgrade phase.
+	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;Blocked;RollingBack;RolledBack
+	Phase string `json:"phase,omitempty"`
+	// UpdatedReplicas is the number of replicas using the target template.
+	// +optional
+	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
+	// ReadyReplicas is the number of ready replicas using the target template.
+	// +optional
+	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+	// Message describes the current upgrade step.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// FailureReason describes why the upgrade stopped.
+	// +optional
+	FailureReason string `json:"failureReason,omitempty"`
+	// StartedAt records when the upgrade started.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// CompletedAt records when the upgrade ended.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	// DeadlineAt is the upgrade health-check deadline.
+	// +optional
+	DeadlineAt *metav1.Time `json:"deadlineAt,omitempty"`
+}
+
+// UpgradeRecord is a compact record of one completed upgrade attempt.
+type UpgradeRecord struct {
+	FromVersion   string      `json:"fromVersion,omitempty"`
+	ToVersion     string      `json:"toVersion,omitempty"`
+	FromImage     string      `json:"fromImage,omitempty"`
+	ToImage       string      `json:"toImage,omitempty"`
+	Result        string      `json:"result,omitempty"`
+	FailureReason string      `json:"failureReason,omitempty"`
+	StartedAt     metav1.Time `json:"startedAt,omitempty"`
+	CompletedAt   metav1.Time `json:"completedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
