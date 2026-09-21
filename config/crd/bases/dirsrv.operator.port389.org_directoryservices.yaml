@@ -215,6 +215,12 @@ spec:
                   - name
                   type: object
                 type: array
+              version:
+                description: |-
+                  Version is the target 389DS semantic version. Existing resources may omit
+                  this field; the operator adopts their image version on first observation.
+                pattern: ^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$
+                type: string
             required:
             - image
             type: object

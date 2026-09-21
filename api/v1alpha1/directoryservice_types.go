@@ -29,6 +29,12 @@ type DirectoryServiceSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
+	// Version is the target 389DS semantic version. Existing resources may omit
+	// this field; the operator adopts their image version on first observation.
+	// +kubebuilder:validation:Pattern=`^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$`
+	// +optional
+	Version string `json:"version,omitempty"`
+
 	// Replicas is the number of DS pods in the StatefulSet.
 	// +kubebuilder:default=1
 	// +kubebuilder:validation:Minimum=1
