@@ -300,12 +300,16 @@ spec:
                       type: string
                     failureReason:
                       type: string
+                    fromImage:
+                      type: string
                     fromVersion:
                       type: string
                     result:
                       type: string
                     startedAt:
                       format: date-time
+                      type: string
+                    toImage:
                       type: string
                     toVersion:
                       type: string
@@ -339,12 +343,19 @@ spec:
               upgrade:
                 description: Upgrade contains the active upgrade progress.
                 properties:
+                  blockedVersion:
+                    description: BlockedVersion prevents an automatic retry after
+                      rollback.
+                    type: string
                   completedAt:
                     description: CompletedAt records when the upgrade ended.
                     format: date-time
                     type: string
                   failureReason:
                     description: FailureReason describes why the upgrade stopped.
+                    type: string
+                  fromImage:
+                    description: FromImage is the last known good image.
                     type: string
                   fromVersion:
                     description: FromVersion is the version before the upgrade.
@@ -370,6 +381,9 @@ spec:
                   startedAt:
                     description: StartedAt records when the upgrade started.
                     format: date-time
+                    type: string
+                  targetImage:
+                    description: TargetImage is the image being deployed.
                     type: string
                   updatedReplicas:
                     description: UpdatedReplicas is the number of replicas using the

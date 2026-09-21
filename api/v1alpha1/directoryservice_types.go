@@ -166,6 +166,15 @@ type UpgradeStatus struct {
 	// FromVersion is the version before the upgrade.
 	// +optional
 	FromVersion string `json:"fromVersion,omitempty"`
+	// FromImage is the last known good image.
+	// +optional
+	FromImage string `json:"fromImage,omitempty"`
+	// TargetImage is the image being deployed.
+	// +optional
+	TargetImage string `json:"targetImage,omitempty"`
+	// BlockedVersion prevents an automatic retry after rollback.
+	// +optional
+	BlockedVersion string `json:"blockedVersion,omitempty"`
 	// Phase is the current upgrade phase.
 	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;RollingBack;RolledBack
 	Phase string `json:"phase,omitempty"`
@@ -193,6 +202,8 @@ type UpgradeStatus struct {
 type UpgradeRecord struct {
 	FromVersion   string      `json:"fromVersion,omitempty"`
 	ToVersion     string      `json:"toVersion,omitempty"`
+	FromImage     string      `json:"fromImage,omitempty"`
+	ToImage       string      `json:"toImage,omitempty"`
 	Result        string      `json:"result,omitempty"`
 	FailureReason string      `json:"failureReason,omitempty"`
 	StartedAt     metav1.Time `json:"startedAt,omitempty"`
