@@ -51,6 +51,21 @@ func TestValidateTarget(t *testing.T) {
 			}
 		})
 	}
+	if err := ValidateTransition("3.0.0", "4.0.0", "3.0.0->4.0.0"); err != nil {
+		t.Fatalf("major upgrade with approval: %v", err)
+	}
+	if err := ValidateTransition("3.0.0", "4.0.0", ""); err == nil {
+		t.Fatal("major upgrade without approval succeeded")
+	}
+	if err := ValidateTransition("4.0.0", "3.0.0", "4.0.0->3.0.0"); err != nil {
+		t.Fatalf("major downgrade with approval: %v", err)
+	}
+	if err := ValidateTransition("3.2.0", "3.1.0", "4.0.0->3.1.0"); err == nil {
+		t.Fatal("minor downgrade with wrong approval succeeded")
+	}
+	if err := ValidateTransition("3.1.2", "3.1.1", ""); err != nil {
+		t.Fatalf("patch downgrade: %v", err)
+	}
 }
 
 func TestExtractVersionFromImage(t *testing.T) {
@@ -61,6 +76,24 @@ func TestExtractVersionFromImage(t *testing.T) {
 	for _, image := range []string{"quay.io/389ds/dirsrv:latest", "quay.io/389ds/dirsrv", "quay.io/389ds/dirsrv@sha256:abc"} {
 		if _, err := ExtractVersionFromImage(image); err == nil {
 			t.Errorf("ExtractVersionFromImage(%q) succeeded", image)
+		}
+	}
+}
+
+func TestRequiresBackup(t *testing.T) {
+	for _, test := range []struct {
+		current, target string
+		required        bool
+	}{
+		{"3.1.1", "3.1.2", false},
+		{"3.1.2", "3.1.1", false},
+		{"3.1.0", "3.2.0", false},
+		{"3.2.0", "3.1.0", true},
+		{"3.1.0", "4.0.0", true},
+		{"4.0.0", "3.1.0", true},
+	} {
+		if got := RequiresBackup(test.current, test.target); got != test.required {
+			t.Errorf("RequiresBackup(%q, %q) = %t, want %t", test.current, test.target, got, test.required)
 		}
 	}
 }

@@ -322,6 +322,10 @@ spec:
                 - Running
                 - Degraded
                 - Failed
+                - Blocked
+                - Upgrading
+                - RollingBack
+                - RolledBack
                 type: string
               readyReplicas:
                 description: ReadyReplicas is the number of pods that are ready.
@@ -343,12 +347,24 @@ spec:
               upgrade:
                 description: Upgrade contains the active upgrade progress.
                 properties:
+                  attemptedImage:
+                    description: AttemptedImage preserves the original image across
+                      rollback.
+                    type: string
+                  attemptedVersion:
+                    description: AttemptedVersion preserves the original target across
+                      rollback.
+                    type: string
                   blockedVersion:
                     description: BlockedVersion prevents an automatic retry after
                       rollback.
                     type: string
                   completedAt:
                     description: CompletedAt records when the upgrade ended.
+                    format: date-time
+                    type: string
+                  deadlineAt:
+                    description: DeadlineAt is the upgrade health-check deadline.
                     format: date-time
                     type: string
                   failureReason:
@@ -363,6 +379,13 @@ spec:
                   message:
                     description: Message describes the current upgrade step.
                     type: string
+                  observedGeneration:
+                    description: ObservedGeneration is the spec generation being processed.
+                    format: int64
+                    type: integer
+                  operationID:
+                    description: OperationID identifies this upgrade attempt.
+                    type: string
                   phase:
                     description: Phase is the current upgrade phase.
                     enum:
@@ -370,6 +393,7 @@ spec:
                     - Upgrading
                     - Succeeded
                     - Failed
+                    - Blocked
                     - RollingBack
                     - RolledBack
                     type: string

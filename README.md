@@ -104,13 +104,47 @@ kubectl get dirsrv
 ### Upgrades
 
 Change `spec.version` and `spec.image` together. The version must use semantic
-version format. Patch and minor upgrades are supported. Downgrades and major
-version changes are rejected.
+version format. Patch and minor upgrades are supported. Major upgrades and
+minor or major downgrades require exact transition approval.
 
 ```sh
 kubectl patch dirsrv example-ds --type merge -p \
   '{"spec":{"version":"3.1.1","image":"quay.io/389ds/dirsrv:3.1.1"}}'
 ```
+
+For example, approve `3.1.0` to `4.0.0`, then update the version and image:
+
+```sh
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/approved-transition=3.1.0->4.0.0' --overwrite
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/backup-confirmed=3.1.0->4.0.0' --overwrite
+kubectl patch dirsrv example-ds --type merge -p \
+  '{"spec":{"version":"4.0.0","image":"quay.io/389ds/dirsrv:4.0.0"}}'
+```
+
+The approval must match `current->target` exactly. Remove it after the
+transition if future major changes should remain blocked.
+
+Data-compatible downgrades can be enabled with exact transition approval:
+
+```sh
+# 4.x -> 3.x
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/approved-transition=4.0.0->3.1.0' --overwrite
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/backup-confirmed=4.0.0->3.1.0' --overwrite
+
+# 3.2.x -> 3.1.x
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/approved-transition=3.2.0->3.1.0' --overwrite
+kubectl annotate dirsrv example-ds \
+  'dirsrv.operator.port389.org/backup-confirmed=3.2.0->3.1.0' --overwrite
+```
+
+Patch downgrades are allowed without approval. The operator rejects image and
+version mismatches before changing the StatefulSet. Major changes and minor
+downgrades also require matching backup confirmation.
 
 The operator updates one StatefulSet pod at a time and waits for the updated
 replica to become ready. Inspect progress with:

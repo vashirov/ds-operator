@@ -78,8 +78,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&controller.DirectoryServiceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("ds-operator"),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

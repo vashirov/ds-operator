@@ -36,8 +36,14 @@ func ParseVersion(value string) (semver.Version, error) {
 	return version, nil
 }
 
-// ValidateTarget rejects downgrades and major-version changes.
+// ValidateTarget rejects risky transitions without explicit approval.
 func ValidateTarget(current, target string) error {
+	return ValidateTransition(current, target, "")
+}
+
+// ValidateTransition validates a version transition. Approval must match
+// current->target for major upgrades and all non-patch downgrades.
+func ValidateTransition(current, target, approval string) error {
 	currentVersion, err := ParseVersion(current)
 	if err != nil {
 		return fmt.Errorf("current version: %w", err)
@@ -47,12 +53,38 @@ func ValidateTarget(current, target string) error {
 		return fmt.Errorf("target version: %w", err)
 	}
 	if targetVersion.LT(currentVersion) {
-		return fmt.Errorf("version downgrade from %s to %s is not supported", current, target)
+		if targetVersion.Major != currentVersion.Major || targetVersion.Minor != currentVersion.Minor {
+			if approval != normalizedTransition(currentVersion, targetVersion) {
+				return fmt.Errorf("downgrade from %s to %s requires approval %q", current, target, normalizedTransition(currentVersion, targetVersion))
+			}
+		}
 	}
-	if targetVersion.Major != currentVersion.Major {
-		return fmt.Errorf("major version upgrade from %s to %s is not supported", current, target)
+	if targetVersion.GT(currentVersion) && targetVersion.Major != currentVersion.Major {
+		if approval != normalizedTransition(currentVersion, targetVersion) {
+			return fmt.Errorf("major version upgrade from %s to %s requires approval %q", current, target, normalizedTransition(currentVersion, targetVersion))
+		}
 	}
 	return nil
+}
+
+// RequiresBackup reports whether transition needs a confirmed backup.
+func RequiresBackup(current, target string) bool {
+	currentVersion, err := ParseVersion(current)
+	if err != nil {
+		return true
+	}
+	targetVersion, err := ParseVersion(target)
+	if err != nil {
+		return true
+	}
+	if currentVersion.Major != targetVersion.Major {
+		return true
+	}
+	return targetVersion.LT(currentVersion) && currentVersion.Minor != targetVersion.Minor
+}
+
+func normalizedTransition(current, target semver.Version) string {
+	return fmt.Sprintf("%s->%s", current, target)
 }
 
 // ExtractVersionFromImage extracts a semantic version from an image tag.

@@ -17,6 +17,7 @@ limitations under the License.
 package controller_test
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -648,4 +649,292 @@ var _ = Describe("DirectoryService Controller", func() {
 			Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
 		})
 	})
+
+	Context("when reconciling version transitions", func() {
+		It("blocks an image and version mismatch before creating a StatefulSet", func() {
+			ds := newVersionedDirectoryService("test-version-mismatch", "3.1.0", 1)
+			ds.Spec.Image = "quay.io/389ds/dirsrv:3.2.0"
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				g.Expect(fetched.Status.Phase).To(Equal("Blocked"), "status=%+v", fetched.Status)
+				g.Expect(fetched.Status.Upgrade).NotTo(BeNil())
+				g.Expect(fetched.Status.Upgrade.FailureReason).To(ContainSubstring("does not match"))
+			}, timeout, interval).Should(Succeed())
+
+			Consistently(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, &appsv1.StatefulSet{})
+			}, time.Second, interval).ShouldNot(Succeed())
+
+			Eventually(func(g Gomega) {
+				events := &corev1.EventList{}
+				g.Expect(k8sClient.List(ctx, events)).To(Succeed())
+				found := false
+				for _, event := range events.Items {
+					if event.InvolvedObject.Name == ds.Name && event.Reason == "UpgradeBlocked" {
+						found = true
+						break
+					}
+				}
+				g.Expect(found).To(BeTrue())
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("rolls out an approved major upgrade one pod at a time", func() {
+			ds := newVersionedDirectoryService("test-major-upgrade", "3.1.0", 3)
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+			waitForStatefulSet(ds.Name, ds.Namespace)
+			waitForCurrentVersion(ds.Name, ds.Namespace, "3.1.0")
+
+			updateStatefulSetStatus(ds.Name, ds.Namespace, 3, 3, 3)
+			updateVersion(ds, "4.0.0", "3.1.0->4.0.0", "3.1.0->4.0.0")
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				sts := &appsv1.StatefulSet{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("Upgrading"))
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)).To(Succeed())
+				g.Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/389ds/dirsrv:4.0.0"))
+				if sts.Spec.UpdateStrategy.RollingUpdate == nil || sts.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
+					return
+				}
+				g.Expect(*sts.Spec.UpdateStrategy.RollingUpdate.Partition).To(Equal(int32(2)))
+			}, timeout, interval).Should(Succeed())
+
+			updateStatefulSetStatus(ds.Name, ds.Namespace, 3, 1, 1)
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.UpdatedReplicas).To(Equal(int32(1)))
+			}, timeout, interval).Should(Succeed())
+
+			updateStatefulSetStatus(ds.Name, ds.Namespace, 3, 3, 3)
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.CurrentVersion).To(Equal("4.0.0"))
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("Succeeded"))
+				g.Expect(fetched.Status.History).NotTo(BeEmpty())
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("rolls back after a failed upgrade", func() {
+			ds := newVersionedDirectoryService("test-failed-upgrade", "3.1.0", 1)
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+			waitForStatefulSet(ds.Name, ds.Namespace)
+			waitForCurrentVersion(ds.Name, ds.Namespace, "3.1.0")
+			updateVersion(ds, "3.1.1", "", "")
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("Upgrading"))
+			}, timeout, interval).Should(Succeed())
+
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "test-failed-upgrade-0", Namespace: ds.Namespace, Labels: labelsForTest(ds.Name),
+			}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "dirsrv", Image: "quay.io/389ds/dirsrv:3.1.1"}}}}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pod) })
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "dirsrv", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				sts := &appsv1.StatefulSet{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("RollingBack"))
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)).To(Succeed())
+				g.Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/389ds/dirsrv:3.1.0"))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("rolls back when the upgrade deadline expires", func() {
+			ds := newVersionedDirectoryService("test-timeout-upgrade", "3.1.0", 1)
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+			waitForStatefulSet(ds.Name, ds.Namespace)
+			waitForCurrentVersion(ds.Name, ds.Namespace, "3.1.0")
+			updateVersion(ds, "3.1.1", "", "")
+			waitForUpgradePhase(ds.Name, ds.Namespace, "Upgrading")
+
+			Eventually(func() error {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched); err != nil {
+					return err
+				}
+				if fetched.Status.Upgrade == nil {
+					return fmt.Errorf("upgrade has not started")
+				}
+				fetched.Status.Upgrade.DeadlineAt = ptr.To(metav1.NewTime(time.Now().Add(-time.Minute)))
+				return k8sClient.Status().Update(ctx, fetched)
+			}, timeout, interval).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("RollingBack"))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("starts manual rollback from recorded history", func() {
+			ds := newVersionedDirectoryService("test-manual-rollback", "3.1.1", 1)
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+			waitForStatefulSet(ds.Name, ds.Namespace)
+			waitForCurrentVersion(ds.Name, ds.Namespace, "3.1.1")
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(Succeed())
+			now := metav1.Now()
+			ds.Status.History = []operatorv1alpha1.UpgradeRecord{{
+				FromVersion: "3.1.0", ToVersion: "3.1.1",
+				FromImage: "quay.io/389ds/dirsrv:3.1.0", ToImage: "quay.io/389ds/dirsrv:3.1.1",
+				Result: "Succeeded", StartedAt: now, CompletedAt: now,
+			}}
+			Expect(k8sClient.Status().Update(ctx, ds)).To(Succeed())
+
+			ds.Annotations = map[string]string{"dirsrv.operator.port389.org/rollback-to": "3.1.0"}
+			Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				sts := &appsv1.StatefulSet{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("RollingBack"))
+				g.Expect(fetched.Annotations).NotTo(HaveKey("dirsrv.operator.port389.org/rollback-to"))
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, sts)).To(Succeed())
+				g.Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("quay.io/389ds/dirsrv:3.1.0"))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("allows patch downgrades without approval", func() {
+			ds := newVersionedDirectoryService("test-patch-downgrade", "3.1.1", 1)
+			Expect(k8sClient.Create(ctx, ds)).To(Succeed())
+			DeferCleanup(deleteDirectoryService, ds.Name, ds.Namespace)
+			waitForStatefulSet(ds.Name, ds.Namespace)
+			waitForCurrentVersion(ds.Name, ds.Namespace, "3.1.1")
+			updateVersion(ds, "3.1.0", "", "")
+
+			Eventually(func(g Gomega) {
+				fetched := &operatorv1alpha1.DirectoryService{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, fetched)).To(Succeed())
+				if fetched.Status.Upgrade == nil {
+					return
+				}
+				g.Expect(fetched.Status.Upgrade.Phase).To(Equal("Upgrading"))
+			}, timeout, interval).Should(Succeed())
+		})
+	})
 })
+
+func newVersionedDirectoryService(name, version string, replicas int32) *operatorv1alpha1.DirectoryService {
+	return &operatorv1alpha1.DirectoryService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: operatorv1alpha1.DirectoryServiceSpec{
+			Image:    "quay.io/389ds/dirsrv:" + version,
+			Version:  version,
+			Replicas: ptr.To(replicas),
+		},
+	}
+}
+
+func updateVersion(ds *operatorv1alpha1.DirectoryService, version, approval, backup string) {
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ds.Name, Namespace: ds.Namespace}, ds)).To(Succeed())
+	if ds.Annotations == nil {
+		ds.Annotations = map[string]string{}
+	}
+	if approval != "" {
+		ds.Annotations["dirsrv.operator.port389.org/approved-transition"] = approval
+	}
+	if backup != "" {
+		ds.Annotations["dirsrv.operator.port389.org/backup-confirmed"] = backup
+	}
+	ds.Spec.Version = version
+	ds.Spec.Image = "quay.io/389ds/dirsrv:" + version
+	Expect(k8sClient.Update(ctx, ds)).To(Succeed())
+}
+
+func waitForStatefulSet(name, namespace string) {
+	Eventually(func() error {
+		return k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &appsv1.StatefulSet{})
+	}, timeout, interval).Should(Succeed())
+}
+
+func waitForCurrentVersion(name, namespace, version string) {
+	Eventually(func(g Gomega) {
+		ds := &operatorv1alpha1.DirectoryService{}
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ds)).To(Succeed())
+		g.Expect(ds.Status.CurrentVersion).To(Equal(version))
+	}, timeout, interval).Should(Succeed())
+}
+
+func waitForUpgradePhase(name, namespace, phase string) {
+	Eventually(func(g Gomega) {
+		ds := &operatorv1alpha1.DirectoryService{}
+		g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ds)).To(Succeed())
+		if ds.Status.Upgrade == nil {
+			return
+		}
+		g.Expect(ds.Status.Upgrade.Phase).To(Equal(phase))
+	}, timeout, interval).Should(Succeed())
+}
+
+func updateStatefulSetStatus(name, namespace string, replicas, updated, ready int32) {
+	Eventually(func() error {
+		sts := &appsv1.StatefulSet{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sts); err != nil {
+			return err
+		}
+		sts.Status.Replicas = replicas
+		sts.Status.UpdatedReplicas = updated
+		sts.Status.ReadyReplicas = ready
+		return k8sClient.Status().Update(ctx, sts)
+	}, timeout, interval).Should(Succeed())
+}
+
+func deleteDirectoryService(name, namespace string) {
+	ds := &operatorv1alpha1.DirectoryService{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ds); err == nil {
+		Expect(k8sClient.Delete(ctx, ds)).To(Succeed())
+	}
+	Eventually(func() error {
+		return client.IgnoreNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ds))
+	}, timeout, interval).Should(Succeed())
+}
+
+func labelsForTest(name string) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "directoryservice",
+		"app.kubernetes.io/instance":   name,
+		"app.kubernetes.io/managed-by": "ds-operator",
+	}
+}

@@ -124,7 +124,7 @@ type PortSpec struct {
 // DirectoryServiceStatus defines the observed state of DirectoryService.
 type DirectoryServiceStatus struct {
 	// Phase represents the current lifecycle phase.
-	// +kubebuilder:validation:Enum=Initializing;Running;Degraded;Failed
+	// +kubebuilder:validation:Enum=Initializing;Running;Degraded;Failed;Blocked;Upgrading;RollingBack;RolledBack
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
@@ -163,6 +163,12 @@ type DirectoryServiceStatus struct {
 
 // UpgradeStatus records the state of a version transition.
 type UpgradeStatus struct {
+	// OperationID identifies this upgrade attempt.
+	// +optional
+	OperationID string `json:"operationID,omitempty"`
+	// ObservedGeneration is the spec generation being processed.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// FromVersion is the version before the upgrade.
 	// +optional
 	FromVersion string `json:"fromVersion,omitempty"`
@@ -172,11 +178,17 @@ type UpgradeStatus struct {
 	// TargetImage is the image being deployed.
 	// +optional
 	TargetImage string `json:"targetImage,omitempty"`
+	// AttemptedVersion preserves the original target across rollback.
+	// +optional
+	AttemptedVersion string `json:"attemptedVersion,omitempty"`
+	// AttemptedImage preserves the original image across rollback.
+	// +optional
+	AttemptedImage string `json:"attemptedImage,omitempty"`
 	// BlockedVersion prevents an automatic retry after rollback.
 	// +optional
 	BlockedVersion string `json:"blockedVersion,omitempty"`
 	// Phase is the current upgrade phase.
-	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;RollingBack;RolledBack
+	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;Blocked;RollingBack;RolledBack
 	Phase string `json:"phase,omitempty"`
 	// UpdatedReplicas is the number of replicas using the target template.
 	// +optional
@@ -196,6 +208,9 @@ type UpgradeStatus struct {
 	// CompletedAt records when the upgrade ended.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	// DeadlineAt is the upgrade health-check deadline.
+	// +optional
+	DeadlineAt *metav1.Time `json:"deadlineAt,omitempty"`
 }
 
 // UpgradeRecord is a compact record of one completed upgrade attempt.
