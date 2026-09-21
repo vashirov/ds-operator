@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -64,7 +65,8 @@ const (
 // DirectoryServiceReconciler reconciles a DirectoryService object.
 type DirectoryServiceReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=dirsrv.operator.port389.org,resources=directoryservices,verbs=get;list;watch;create;update;patch;delete
@@ -75,6 +77,7 @@ type DirectoryServiceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles DirectoryService create/update/delete events.
 func (r *DirectoryServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -155,6 +158,7 @@ func (r *DirectoryServiceReconciler) reconcileUpgrade(
 				FailureReason: err.Error(),
 				Message:       err.Error(),
 			}
+			r.recordEvent(ds, "Warning", "InvalidUpgrade", err.Error())
 			meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
 				Type:               "UpgradeSucceeded",
 				Status:             metav1.ConditionFalse,
@@ -168,10 +172,19 @@ func (r *DirectoryServiceReconciler) reconcileUpgrade(
 		ds.Status.CurrentVersion = currentVersion
 		ds.Status.TargetVersion = targetVersion
 		ds.Status.Upgrade = &operatorv1alpha1.UpgradeStatus{
-			Phase:     phaseUpgrading,
-			StartedAt: &now,
-			Message:   fmt.Sprintf("Starting upgrade from %s to %s", currentVersion, targetVersion),
+			FromVersion: currentVersion,
+			Phase:       phaseUpgrading,
+			StartedAt:   &now,
+			Message:     fmt.Sprintf("Starting upgrade from %s to %s", currentVersion, targetVersion),
 		}
+		r.recordEvent(ds, "Normal", "UpgradeStarted", ds.Status.Upgrade.Message)
+		meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+			Type:               "UpgradeInProgress",
+			Status:             metav1.ConditionTrue,
+			Reason:             "UpgradeStarted",
+			Message:            ds.Status.Upgrade.Message,
+			ObservedGeneration: ds.Generation,
+		})
 	}
 
 	if ds.Status.Upgrade != nil && ds.Status.Upgrade.Phase == phaseUpgrading {
@@ -677,11 +690,23 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 			ds.Status.Upgrade.Message = fmt.Sprintf("Upgrading %d/%d pods", sts.Status.UpdatedReplicas, sts.Status.Replicas)
 			if sts.Status.UpdatedReplicas == sts.Status.Replicas &&
 				sts.Status.ReadyReplicas == sts.Status.Replicas {
+				wasUpgrading := ds.Status.Upgrade.Phase == phaseUpgrading
 				now := metav1.NewTime(time.Now())
 				ds.Status.CurrentVersion = ds.Status.TargetVersion
 				ds.Status.Upgrade.Phase = "Succeeded"
 				ds.Status.Upgrade.CompletedAt = &now
 				ds.Status.Upgrade.Message = "Upgrade completed"
+				if wasUpgrading {
+					r.recordEvent(ds, "Normal", "UpgradeCompleted", ds.Status.Upgrade.Message)
+					meta.SetStatusCondition(&ds.Status.Conditions, metav1.Condition{
+						Type:               "UpgradeSucceeded",
+						Status:             metav1.ConditionTrue,
+						Reason:             "UpgradeCompleted",
+						Message:            ds.Status.Upgrade.Message,
+						ObservedGeneration: ds.Generation,
+					})
+					r.appendUpgradeHistory(ds)
+				}
 			}
 		}
 
@@ -716,6 +741,35 @@ func (r *DirectoryServiceReconciler) reconcileStatus(
 	})
 
 	return r.Status().Update(ctx, ds)
+}
+
+func (r *DirectoryServiceReconciler) recordEvent(
+	ds *operatorv1alpha1.DirectoryService, eventType, reason, message string,
+) {
+	if r.Recorder != nil {
+		r.Recorder.Event(ds, eventType, reason, message)
+	}
+}
+
+func (r *DirectoryServiceReconciler) appendUpgradeHistory(ds *operatorv1alpha1.DirectoryService) {
+	if ds.Status.Upgrade == nil || ds.Status.Upgrade.StartedAt == nil || ds.Status.Upgrade.CompletedAt == nil {
+		return
+	}
+	for _, item := range ds.Status.History {
+		if item.StartedAt.Time.Equal(ds.Status.Upgrade.StartedAt.Time) {
+			return
+		}
+	}
+	ds.Status.History = append(ds.Status.History, operatorv1alpha1.UpgradeRecord{
+		FromVersion: ds.Status.Upgrade.FromVersion,
+		ToVersion:   ds.Status.TargetVersion,
+		Result:      "Succeeded",
+		StartedAt:   *ds.Status.Upgrade.StartedAt,
+		CompletedAt: *ds.Status.Upgrade.CompletedAt,
+	})
+	if len(ds.Status.History) > 5 {
+		ds.Status.History = ds.Status.History[len(ds.Status.History)-5:]
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -289,6 +289,28 @@ spec:
                 description: CurrentVersion is the last version confirmed healthy
                   by the operator.
                 type: string
+              history:
+                description: History contains the latest completed upgrade attempts.
+                items:
+                  description: UpgradeRecord is a compact record of one completed
+                    upgrade attempt.
+                  properties:
+                    completedAt:
+                      format: date-time
+                      type: string
+                    failureReason:
+                      type: string
+                    fromVersion:
+                      type: string
+                    result:
+                      type: string
+                    startedAt:
+                      format: date-time
+                      type: string
+                    toVersion:
+                      type: string
+                  type: object
+                type: array
               phase:
                 description: Phase represents the current lifecycle phase.
                 enum:
@@ -323,6 +345,9 @@ spec:
                     type: string
                   failureReason:
                     description: FailureReason describes why the upgrade stopped.
+                    type: string
+                  fromVersion:
+                    description: FromVersion is the version before the upgrade.
                     type: string
                   message:
                     description: Message describes the current upgrade step.

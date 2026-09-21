@@ -155,10 +155,17 @@ type DirectoryServiceStatus struct {
 	// Upgrade contains the active upgrade progress.
 	// +optional
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+
+	// History contains the latest completed upgrade attempts.
+	// +optional
+	History []UpgradeRecord `json:"history,omitempty"`
 }
 
 // UpgradeStatus records the state of a version transition.
 type UpgradeStatus struct {
+	// FromVersion is the version before the upgrade.
+	// +optional
+	FromVersion string `json:"fromVersion,omitempty"`
 	// Phase is the current upgrade phase.
 	// +kubebuilder:validation:Enum=Validating;Upgrading;Succeeded;Failed;RollingBack;RolledBack
 	Phase string `json:"phase,omitempty"`
@@ -180,6 +187,16 @@ type UpgradeStatus struct {
 	// CompletedAt records when the upgrade ended.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+}
+
+// UpgradeRecord is a compact record of one completed upgrade attempt.
+type UpgradeRecord struct {
+	FromVersion   string      `json:"fromVersion,omitempty"`
+	ToVersion     string      `json:"toVersion,omitempty"`
+	Result        string      `json:"result,omitempty"`
+	FailureReason string      `json:"failureReason,omitempty"`
+	StartedAt     metav1.Time `json:"startedAt,omitempty"`
+	CompletedAt   metav1.Time `json:"completedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
